@@ -2975,6 +2975,37 @@ test_pr_truth_remote_goal_and_aged_scope() {
   pass "remote PRs and goals preserve stale scope and reject malformed optional fields independently"
 }
 
+test_invalid_recorded_pr_urls_never_poison_valid_evidence() {
+  local parent fakebin provider remote_home json
+  parent=$(make_home pr-mixed-urls)
+  make_remote_ledger_fleet "$parent" 1
+  fakebin=$(make_remote_ledger_ssh "$parent/remote-ssh")
+  provider=$(make_fakebin "$parent")
+  remote_home="$TMP_ROOT/remote-ledger-home-1"
+  jq '.recorded_prs = [
+      {id:"valid-ship",repo:"firstmate",url:"https://github.com/kunchenguid/firstmate/pull/77"},
+      {id:"files-suffix",repo:"firstmate",url:"https://github.com/kunchenguid/firstmate/pull/78/files"},
+      {id:"trailing-slash",repo:"firstmate",url:"https://github.com/kunchenguid/firstmate/pull/79/"},
+      {id:"fragment",repo:"firstmate",url:"https://github.com/kunchenguid/firstmate/pull/80#discussion"},
+      {id:"query-string",repo:"firstmate",url:"https://github.com/kunchenguid/firstmate/pull/81?w=1"},
+      {id:"foreign-host",repo:"firstmate",url:"https://gitlab.com/kunchenguid/firstmate/pull/82"}
+    ]' "$remote_home/state/home-summary.json" > "$remote_home/state/next.json"
+  mv "$remote_home/state/next.json" "$remote_home/state/home-summary.json"
+  json=$(PATH="$provider:$PATH" NET_LOG="$parent/net.log" run_remote_ledger_bearings "$parent" "$fakebin" 2000)
+  printf '%s' "$json" | jq -e '
+    (.pr_evidence | length) == 1
+    and (.pr_evidence[0] | .id == "valid-ship" and .state == "merged" and .freshness == "fresh")
+    and (.merged_prs | any(.id == "valid-ship"))
+    and (.pr_evidence | all(.freshness != "unavailable"))
+  ' >/dev/null || fail "invalid recorded PR URLs poisoned or hid valid PR evidence: $json"
+  [ "$(grep -c 'pullRequest(number:' "$parent/net.log.query")" = 1 ] \
+    || fail "batched query did not scope to the single valid identity: $(cat "$parent/net.log.query")"
+  if grep -Eq 'number:\)|gitlab|/78|/79|/80|/81|/82' "$parent/net.log.query"; then
+    fail "malformed or non-github recorded URL leaked into the GraphQL document: $(cat "$parent/net.log.query")"
+  fi
+  pass "trailing-slash, fragment, query, /files, and non-github recorded URLs cannot poison valid PR truth"
+}
+
 test_default_pr_truth_states_scope_and_fidelity() {
   local home fakebin json
   home=$(make_home pr-truth); write_fixture "$home"
@@ -3057,6 +3088,7 @@ test_pr_truth_shared_deadline_and_latency() {
 }
 
 test_pr_truth_remote_goal_and_aged_scope
+test_invalid_recorded_pr_urls_never_poison_valid_evidence
 test_default_pr_truth_states_scope_and_fidelity
 test_pr_truth_partial_unavailable_and_offline
 test_pr_truth_shared_deadline_and_latency
