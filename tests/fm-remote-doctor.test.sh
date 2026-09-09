@@ -549,6 +549,16 @@ expect_code 0 "$DOCTOR_RC" "--fix left a bash-login-shell host unready"
 assert_herdr_launch_agent_contract "$CASE_PLIST" "$CASE_BIN/herdr" /bin/bash
 pass "a bash Directory Services login shell is rendered with -l -c"
 
+new_case Darwin with-herdr gui
+CASE_LOGIN_SHELL="$CASE_DIR/My Shell/fish&dev"
+mkdir -p "$(dirname "$CASE_LOGIN_SHELL")"
+printf '#!/bin/sh\nexit 0\n' > "$CASE_LOGIN_SHELL"
+chmod +x "$CASE_LOGIN_SHELL"
+doctor --fix
+expect_code 0 "$DOCTOR_RC" "--fix rejected a valid custom Directory Services shell"
+assert_herdr_launch_agent_contract "$CASE_PLIST" "$CASE_BIN/herdr" "$CASE_LOGIN_SHELL"
+pass "custom Directory Services shell paths remain valid plist arguments"
+
 # --- shell resolution falls back to an executable environment shell, then sh -
 
 new_case Darwin with-herdr gui /bin/bash

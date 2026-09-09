@@ -174,6 +174,10 @@ launch_agent_shell_quote() { # <value>
   printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
 }
 
+launch_agent_xml_escape() { # <value>
+  printf '%s' "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'
+}
+
 # Directory Services UserShell is the account's real login shell on darwin
 # (bash, fish, zsh, ...). Fall back without failing the render: $SHELL, then
 # /bin/sh. Separate -l and -c so fish accepts the flags.
@@ -183,8 +187,10 @@ resolve_launch_agent_shell() {
   if [ -n "$user" ] && command -v dscl >/dev/null 2>&1; then
     raw=$(dscl . -read "/Users/$user" UserShell 2>/dev/null || true)
     shell=$(printf '%s\n' "$raw" | awk '
-      $1 == "UserShell:" && NF >= 2 { print $2; exit }
-      $1 ~ /^\// { print $1; exit }
+      /^UserShell:[[:space:]]+/ {
+        sub(/^UserShell:[[:space:]]+/, "")
+        if (length) { print; exit }
+      }
     ')
     if [ -n "$shell" ] && [ -x "$shell" ]; then
       printf '%s' "$shell"
@@ -211,8 +217,9 @@ launch_agent_exec_command() { # <resolved-herdr-path>
 }
 
 render_launch_agent() { # <resolved-herdr-path>
-  local herdr_bin=$1 exec_cmd shell
+  local herdr_bin=$1 exec_cmd shell shell_xml
   shell=$(resolve_launch_agent_shell)
+  shell_xml=$(launch_agent_xml_escape "$shell")
   exec_cmd=$(launch_agent_exec_command "$herdr_bin")
   cat <<XML
 <?xml version="1.0" encoding="UTF-8"?>
@@ -223,7 +230,7 @@ render_launch_agent() { # <resolved-herdr-path>
 	<string>$LAUNCH_AGENT_LABEL</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>$shell</string>
+		<string>$shell_xml</string>
 		<string>-l</string>
 		<string>-c</string>
 		<string>$exec_cmd</string>
