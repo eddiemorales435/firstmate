@@ -3303,6 +3303,31 @@ EOF
   pass "default PR truth preserves exact titles, scopes identities, links goals, and separates closed/green/merged/deployed"
 }
 
+test_held_ship_keeps_pr_truth() {
+  local home fakebin json summary
+  home=$(make_home held-ship); write_fixture "$home"
+  fakebin=$(make_fakebin "$home")
+  "$TASKS_AXI_BIN" hold ship-task --reason "Merge approval required" --kind captain \
+    --file "$home/data/backlog.md" >/dev/null || fail "could not hold the active ship"
+  json=$(run "$home" "$fakebin" --include-prs --json)
+  printf '%s' "$json" | jq -e '
+    (.pr_evidence | any(.id == "ship-task" and .state == "open" and .title == "Ship 9"))
+    and (.candidate_prs | any(.task == "ship-task"))
+    and (.decisions_open | any(.id == "ship-task"))
+  ' >/dev/null || fail "approval hold hid the active ship PR: $json"
+  summary=$(PATH="$fakebin:$PATH" FM_HOME="$home" NET_LOG="$home/net.log" \
+    "$ROOT/bin/fm-fleet-snapshot.sh" --secondmate-home-summary) \
+    || fail "held ship home summary failed"
+  printf '%s' "$summary" | jq -e '
+    .recorded_prs | any(.id == "ship-task" and .url == "https://github.com/kunchenguid/firstmate/pull/9")
+  ' >/dev/null || fail "home summary lost the held ship PR: $summary"
+  json=$(FAKE_GH_ACTIVE_MERGED=1 run "$home" "$fakebin" --json)
+  printf '%s' "$json" | jq -e '
+    .merged_prs | any(.id == "ship-task" and .state == "merged" and .deployment == "unknown")
+  ' >/dev/null || fail "a merge waited for hold reconciliation before appearing: $json"
+  pass "active held ships retain PR truth and secondmate identities before local reconciliation"
+}
+
 test_pr_truth_partial_unavailable() {
   local home fakebin json mode
   home=$(make_home pr-errors); write_fixture "$home"
@@ -3346,6 +3371,7 @@ test_pr_truth_shared_deadline_and_latency() {
 test_pr_truth_remote_goal_and_aged_scope
 test_invalid_recorded_pr_urls_never_poison_valid_evidence
 test_default_pr_truth_states_scope_and_fidelity
+test_held_ship_keeps_pr_truth
 test_pr_truth_partial_unavailable
 test_pr_truth_shared_deadline_and_latency
 test_task_teardown_during_metadata_capture_does_not_abort_snapshot

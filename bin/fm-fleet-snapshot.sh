@@ -91,7 +91,8 @@
 #     These schemas also accept v1 summaries from older producers.
 #   recorded_prs[] contains task metadata and structured in-flight/Done work PR
 #     identities, excluding scouts, captain questions, and secondmates. The shared
-#     projection orders metadata first, then recent completions, without asserting merge.
+#     projection retains active ships awaiting approval and orders metadata first,
+#     then recent completions, without asserting merge.
 #   secondmate_current records also carry optional recorded_prs[] (these identities,
 #     capped by FM_SNAPSHOT_SECONDMATE_CHILDREN) and project_goals[] (in-flight
 #     structured programs and their dependency ids, capped by the queued bound).
@@ -949,7 +950,8 @@ main_inventory_json() {  # <backlog-json-file> <tasks-json-file>
 # Delivery remains a separate verdict from the landed selector and GitHub.
 recorded_prs_json() {  # <backlog-json-file> <tasks-json-file>
   jq -n --slurpfile backlog "$1" --slurpfile tasks "$2" '
-    def work: .kind != "scout" and .kind != "captain" and .kind != "secondmate" and .hold_kind != "captain";
+    def work: .kind != "scout" and .kind != "captain" and .kind != "secondmate"
+      and (.hold_kind != "captain" or (.state == "in_flight" and .kind == "ship"));
     ([$tasks[0][] | . as $task
        | ([$backlog[0].records[] | select(.id == $task.id)][0] // {}) as $row
        | select(work and ($row | work) and .pr.source == "meta" and .pr.url != null)
