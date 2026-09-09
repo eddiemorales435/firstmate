@@ -12,10 +12,13 @@
 # A remote second mate always runs on the Herdr backend in the dedicated
 # fm-remote session. Its account therefore needs the Firstmate-owned Aqua Herdr
 # agent plus the sibling dev.firstmate.remote-job worker that runs normal fm-on
-# commands through the Aqua or Linux job-worker path. Doctor remains invokable
-# over the plain-SSH bootstrap path to inspect and repair that worker. SSH cannot
-# create an Aqua session, so a host with no GUI login is a human gap rather than
-# something --fix attempts to bypass.
+# commands through the Aqua or Linux job-worker path. On darwin, that Herdr
+# agent starts the server through /bin/zsh -lc so the Aqua login session gets
+# login-shell environment and login-keychain access; exec keeps herdr in the
+# foreground under launchd. Doctor remains invokable over the plain-SSH
+# bootstrap path to inspect and repair that worker. SSH cannot create an Aqua
+# session, so a host with no GUI login is a human gap rather than something
+# --fix attempts to bypass.
 #
 # Line protocol, one fact per line, stable for script consumers:
 #   mode=check|fix
@@ -68,6 +71,10 @@ LAUNCH_AGENT_DIR="${HOME:-}/Library/LaunchAgents"
 LAUNCH_AGENT_PLIST="$LAUNCH_AGENT_DIR/$LAUNCH_AGENT_LABEL.plist"
 LAUNCH_AGENT_LOG_DIR="${HOME:-}/Library/Logs"
 LAUNCH_AGENT_LOG="$LAUNCH_AGENT_LOG_DIR/$LAUNCH_AGENT_LABEL.log"
+# System zsh on darwin always sources login files (.zshenv/.zprofile) and
+# never .zshrc unless the shell is interactive. Do not resolve a user zsh:
+# launchd must start a login shell that is always present on macOS.
+LAUNCH_AGENT_SHELL=/bin/zsh
 ENTRYPOINT_LINK="${HOME:-}/.local/bin/fm-remote-entrypoint.sh"
 
 usage() { sed -n '2,5p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
@@ -167,8 +174,25 @@ launch_agent_is_aqua() {
   return 1
 }
 
+launch_agent_shell_quote() { # <value>
+  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
+# Login-shell command that execs the resolved herdr so launchd keeps one
+# foreground process in the Aqua session (login-keychain access) instead of
+# letting herdr self-daemonize into a Background session. KeepAlive stays
+# unconditionally true: this agent uniquely owns fm-remote, and a
+# SuccessfulExit=false plus busy-socket no-op would change the existing
+# restart-on-any-exit contract.
+launch_agent_exec_command() { # <resolved-herdr-path>
+  printf 'exec %s server --session %s' \
+    "$(launch_agent_shell_quote "$1")" \
+    "$(launch_agent_shell_quote "$HERDR_SESSION_NAME")"
+}
+
 render_launch_agent() { # <resolved-herdr-path>
-  local herdr_bin=$1
+  local herdr_bin=$1 exec_cmd
+  exec_cmd=$(launch_agent_exec_command "$herdr_bin")
   cat <<XML
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -178,10 +202,9 @@ render_launch_agent() { # <resolved-herdr-path>
 	<string>$LAUNCH_AGENT_LABEL</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>$herdr_bin</string>
-		<string>server</string>
-		<string>--session</string>
-		<string>$HERDR_SESSION_NAME</string>
+		<string>$LAUNCH_AGENT_SHELL</string>
+		<string>-lc</string>
+		<string>$exec_cmd</string>
 	</array>
 	<key>LimitLoadToSessionType</key>
 	<string>Aqua</string>
@@ -208,16 +231,17 @@ launch_agent_contract_matches() {
 }
 
 launch_agent_loaded_contract_matches() {
-  local loaded herdr_bin herdr_compact plist_compact log_compact args
+  local loaded herdr_bin exec_compact shell_compact plist_compact log_compact args
   herdr_bin=$(command -v herdr 2>/dev/null) || return 1
   loaded=$(launchctl print "gui/$UID_NUM/$LAUNCH_AGENT_LABEL" 2>/dev/null) || return 1
   loaded=$(printf '%s' "$loaded" | tr -d ' \t\r\n') || return 1
-  herdr_compact=$(printf '%s' "$herdr_bin" | tr -d ' \t\r\n') || return 1
+  exec_compact=$(launch_agent_exec_command "$herdr_bin" | tr -d ' \t\r\n') || return 1
+  shell_compact=$(printf '%s' "$LAUNCH_AGENT_SHELL" | tr -d ' \t\r\n') || return 1
   plist_compact=$(printf '%s' "$LAUNCH_AGENT_PLIST" | tr -d ' \t\r\n') || return 1
   log_compact=$(printf '%s' "$LAUNCH_AGENT_LOG" | tr -d ' \t\r\n') || return 1
-  args="arguments={$herdr_compact"'server--session'"$HERDR_SESSION_NAME}"
+  args="arguments={${shell_compact}-lc${exec_compact}}"
   [[ "$loaded" == *"path=$plist_compact"* ]] || return 1
-  [[ "$loaded" == *"program=$herdr_compact"* ]] || return 1
+  [[ "$loaded" == *"program=$shell_compact"* ]] || return 1
   [[ "$loaded" == *"$args"* ]] || return 1
   [[ "$loaded" == *"stdoutpath=$log_compact"* ]] || return 1
   [[ "$loaded" == *"stderrpath=$log_compact"* ]] || return 1

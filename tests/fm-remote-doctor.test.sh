@@ -10,6 +10,7 @@ set -u
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 command -v jq >/dev/null 2>&1 || { echo "skip: jq not found (the herdr adapter parses its JSON)"; exit 0; }
+command -v python3 >/dev/null 2>&1 || { echo "skip: python3 not found (plistlib parses the owned launch-agent contract)"; exit 0; }
 
 TMP_ROOT=$(fm_test_tmproot fm-remote-doctor)
 LABEL=dev.firstmate.herdr.fm-remote
@@ -113,12 +114,11 @@ EOF
       *)
         cat > "$loaded" <<EOF
 path = $FM_FAKE_PLIST
-program = $FM_FAKE_HERDR_BIN
+program = /bin/zsh
 arguments = {
-	$FM_FAKE_HERDR_BIN
-	server
-	--session
-	fm-remote
+	/bin/zsh
+	-lc
+	exec '$FM_FAKE_HERDR_BIN' server --session 'fm-remote'
 }
 stdout path = $FM_FAKE_LAUNCH_AGENT_LOG
 stderr path = $FM_FAKE_LAUNCH_AGENT_LOG
@@ -240,17 +240,40 @@ write_loaded_contract() { # <herdr-path> [properties]
   local herdr_bin=$1 properties=${2:-'keepalive | runatload | inferred program'}
   cat > "$CASE_STATE/loaded-$LABEL" <<EOF
 path = $CASE_PLIST
-program = $herdr_bin
+program = /bin/zsh
 arguments = {
-	$herdr_bin
-	server
-	--session
-	fm-remote
+	/bin/zsh
+	-lc
+	exec '$herdr_bin' server --session 'fm-remote'
 }
 stdout path = $CASE_HOME/Library/Logs/$LABEL.log
 stderr path = $CASE_HOME/Library/Logs/$LABEL.log
 properties = $properties
 EOF
+}
+
+# Parse the doctor's owned launch-agent plist and assert the login-shell
+# argv contract. The plist is Firstmate's output, so semantic structure is
+# in bounds; never match the XML source as a substring.
+assert_herdr_launch_agent_contract() { # <plist> <herdr-bin>
+  local plist=$1 herdr_bin=$2 json argv0 argv1 cmd
+  json=$(python3 -c 'import json,plistlib,sys; print(json.dumps(plistlib.load(open(sys.argv[1], "rb"))))' "$plist") \
+    || fail "could not parse $plist as a plist"
+  argv0=$(printf '%s' "$json" | jq -r '.ProgramArguments[0]')
+  argv1=$(printf '%s' "$json" | jq -r '.ProgramArguments[1]')
+  cmd=$(printf '%s' "$json" | jq -r '.ProgramArguments[2]')
+  [ "$argv0" = /bin/zsh ] || fail "ProgramArguments[0] is $argv0, not /bin/zsh"
+  [ "$argv1" = -lc ] || fail "ProgramArguments[1] is $argv1, not -lc"
+  [ "$cmd" = "exec '$herdr_bin' server --session 'fm-remote'" ] \
+    || fail "ProgramArguments[2] is not exec of $herdr_bin for session fm-remote: $cmd"
+  [ "$(printf '%s' "$json" | jq -r '.LimitLoadToSessionType')" = Aqua ] \
+    || fail "LimitLoadToSessionType is not Aqua"
+  [ "$(printf '%s' "$json" | jq -r '.RunAtLoad')" = true ] \
+    || fail "RunAtLoad is not true"
+  [ "$(printf '%s' "$json" | jq -r '.KeepAlive')" = true ] \
+    || fail "KeepAlive is not true"
+  [ "$(printf '%s' "$json" | jq -r '.Label')" = "$LABEL" ] \
+    || fail "Label is not $LABEL"
 }
 
 assert_no_dangerous_calls() { # <msg>
@@ -325,10 +348,7 @@ assert_contains "$DOCTOR_OUT" 'check remote-job-worker=ok:' "--fix did not insta
 assert_contains "$DOCTOR_OUT" 'check remote-job-worker-loaded=ok:' "--fix did not load the remote job worker"
 assert_present "$CASE_PLIST" "--fix reported success without writing the plist"
 assert_present "$CASE_JOB_PLIST" "--fix reported success without writing the remote job worker plist"
-assert_grep '<string>Aqua</string>' "$CASE_PLIST" "the written plist is not Aqua-scoped"
-assert_grep "<string>$LABEL</string>" "$CASE_PLIST" "the written plist does not carry the Firstmate label"
-assert_grep '<string>server</string>' "$CASE_PLIST" "the written plist does not run a herdr server"
-assert_grep '<string>fm-remote</string>' "$CASE_PLIST" "the written plist does not pin the remote-secondmate session"
+assert_herdr_launch_agent_contract "$CASE_PLIST" "$CASE_BIN/herdr"
 assert_no_grep '<string>default</string>' "$CASE_PLIST" "the written plist pins the interactive default session"
 assert_grep "<string>$JOB_LABEL</string>" "$CASE_JOB_PLIST" "the worker plist does not carry the Firstmate label"
 assert_grep '<string>Aqua</string>' "$CASE_JOB_PLIST" "the worker plist is not Aqua-scoped"
@@ -386,9 +406,7 @@ assert_contains "$DOCTOR_OUT" 'check herdr-server=ok:' "the running fixture was 
 doctor --fix
 expect_code 0 "$DOCTOR_RC" "--fix did not repair launch-agent contract drift"
 assert_contains "$DOCTOR_OUT" 'check launchagent=ok:' "the repaired launch-agent contract was not confirmed"
-assert_grep "<string>$CASE_BIN/herdr</string>" "$CASE_PLIST" "the repaired launch agent does not use the resolved herdr path"
-assert_grep '<key>RunAtLoad</key>' "$CASE_PLIST" "the repaired launch agent does not start at login"
-assert_grep '<key>KeepAlive</key>' "$CASE_PLIST" "the repaired launch agent is not kept alive"
+assert_herdr_launch_agent_contract "$CASE_PLIST" "$CASE_BIN/herdr"
 assert_no_grep '/obsolete/bin/herdr' "$CASE_PLIST" "the obsolete herdr path survived repair"
 pass "a loaded and running launch agent must match the complete owned contract"
 
@@ -454,6 +472,7 @@ doctor --fix
 expect_code 0 "$DOCTOR_RC" "--fix could not re-scope an existing launch agent"
 assert_contains "$DOCTOR_OUT" 'check launchagent-scope=ok: LimitLoadToSessionType=Aqua' \
   "--fix did not re-scope the launch agent to Aqua"
+assert_herdr_launch_agent_contract "$CASE_PLIST" "$CASE_BIN/herdr"
 assert_no_grep 'Background' "$CASE_PLIST" "the Background session scope survived the repair"
 pass "a launch agent outside the Aqua session scope is rewritten in place"
 
