@@ -539,7 +539,7 @@ pr_fetch() (
   trap 'rm -f "$request"' EXIT
   printf '%s' "$query" > "$request" || return 1
   fm_run_timed "$FM_BEARINGS_PR_TIMEOUT" env GH_PROMPT_DISABLED=1 \
-    GH_NO_UPDATE_NOTIFIER=1 gh-axi api POST graphql --input "$request" \
+    GH_NO_UPDATE_NOTIFIER=1 gh-axi api POST /graphql --input "$request" \
     --jq '{payload:(tojson | @base64)}' --full
 )
 PR_SCOPE='{}'

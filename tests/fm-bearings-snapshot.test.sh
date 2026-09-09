@@ -26,7 +26,7 @@ command -v jq >/dev/null 2>&1 || { echo "skip: jq not found"; exit 0; }
 
 # A fakebin that stubs the local tools the canonical snapshot may reach for, plus a
 # gh/gh-axi that RECORDS every call to $NET_LOG so a test can prove the default path
-# makes no network call. gh returns one fixture open PR keyed to the ship task.
+# uses one bounded request. gh returns PR states keyed to recorded identities.
 make_fakebin() {  # <dir>
   local fb
   fb=$(fm_fakebin "$1")
@@ -59,6 +59,8 @@ echo "gh-axi $*" >> "$NET_LOG"
 [ "${FAKE_GH_FAIL:-0}" = 1 ] && exit 1
 [ "${FAKE_GH_SLEEP:-0}" = 1 ] && sleep 30
 [ "${FAKE_GH_MALFORMED:-0}" = 1 ] && { echo 'payload: broken'; exit 0; }
+# The installed wrapper discards partial GraphQL results on the named endpoint.
+[ "${FAKE_GH_PARTIAL:-0}" = 1 ] && [ "${3:-}" = graphql ] && exit 1
 input=''
 while [ "$#" -gt 0 ]; do
   case "$1" in --input) shift; input=$1 ;; esac
@@ -1077,7 +1079,7 @@ test_default_is_bounded_with_managed_pr_truth() {
   # TOON is materially smaller than the canonical snapshot it projects.
   local canon; canon=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$ROOT/bin/fm-fleet-snapshot.sh" --json)
   [ "${#toon}" -lt "${#canon}" ] || fail "projection must be smaller than the canonical snapshot"
-  [ "$(grep -c '^gh-axi api POST graphql ' "$home/net.log")" = 2 ] || fail "each default invocation must use one batched request"
+  [ "$(grep -c '^gh-axi api POST /graphql ' "$home/net.log")" = 2 ] || fail "each default invocation must use one batched request"
   assert_contains "$toon" 'prs: fresh' "default must state fresh PR truth"
   assert_contains "$toon" "live PR review + checks,\"--include-prs\"" "omitted must mark review detail as opt-in"
   # Valid JSON, correct schema.
@@ -1425,7 +1427,7 @@ test_include_prs_adds_review_detail() {
   home=$(make_home prs); write_fixture "$home"
   fakebin=$(make_fakebin "$home"); : > "$home/net.log"
   json=$(run "$home" "$fakebin" --include-prs --json)
-  grep -q '^gh-axi api POST graphql ' "$home/net.log" || fail "--include-prs must use the batched query"
+  grep -q '^gh-axi api POST /graphql ' "$home/net.log" || fail "--include-prs must use the batched query"
   printf '%s' "$json" | jq -e '
     .prs | startswith("fresh")
   ' >/dev/null || fail "--include-prs must report checked PR state"
@@ -1473,8 +1475,8 @@ test_perl_fallback_bounds_github_call() {
   pass "Perl fallback bounds stalled GitHub calls without coreutils timeout"
 }
 
-write_large_fixture() {  # <home> <count>
-  local home=$1 count=$2 i id
+write_large_fixture() {  # <home> <count> [kind]
+  local home=$1 count=$2 kind=${3:-scout} i id
   : > "$home/data/backlog.md"
   printf '## Queued\n' >> "$home/data/backlog.md"
   i=1
@@ -1489,8 +1491,8 @@ write_large_fixture() {  # <home> <count>
       "worktree=$home/projects/$id" \
       "project=repo-$i" \
       "harness=codex" \
-      "kind=scout" \
-      "mode=scout" \
+      "kind=$kind" \
+      "mode=$kind" \
       "pr=https://github.com/acme/repo-$i/pull/$i"
     printf 'needs-decision [key=q%s]: choose %s\n' "$i" "$i" > "$home/state/$id.status"
     i=$((i + 1))
@@ -1527,16 +1529,16 @@ test_section_caps_and_expansion_flags() {
 
 test_pr_repository_cap_and_expansion() {
   local home fakebin json expanded
-  home=$(make_home repo-caps); write_large_fixture "$home" 5
+  home=$(make_home repo-caps); write_large_fixture "$home" 5 ship
   fakebin=$(make_fakebin "$home"); : > "$home/net.log"
   json=$(FM_BEARINGS_PR_REPOS=2 run "$home" "$fakebin" --include-prs --json)
-  [ "$(grep -c '^gh-axi api POST graphql ' "$home/net.log")" = 1 ] || fail "default PR repository cap was not enforced"
+  [ "$(grep -c '^gh-axi api POST /graphql ' "$home/net.log")" = 1 ] || fail "default PR repository cap was not enforced"
   printf '%s' "$json" | jq -e '
     [.omitted[] | select(.surface == "PR repositories showing 2 of 5" and .reveal == "--all-pr-repos")] | length == 1
   ' >/dev/null || fail "PR repository truncation was not recorded: $json"
   : > "$home/net.log"
   expanded=$(FM_BEARINGS_PR_REPOS=2 run "$home" "$fakebin" --include-prs --all-pr-repos --json)
-  [ "$(grep -c '^gh-axi api POST graphql ' "$home/net.log")" = 1 ] || fail "--all-pr-repos did not reveal every repository"
+  [ "$(grep -c '^gh-axi api POST /graphql ' "$home/net.log")" = 1 ] || fail "--all-pr-repos did not reveal every repository"
   printf '%s' "$expanded" | jq -e '.pr_evidence | length == 5' >/dev/null \
     || fail "expanded PR repository set did not enrich every repository: $expanded"
   pass "live PR enrichment caps repositories with counted expansion"
@@ -1629,7 +1631,7 @@ test_landed_includes_secondmate_home_merges() {
     (.landed | any(.[]; .id == "mate-landed" and (.artifact | test("/pull/50"))))
       and (.landed | any(.[]; .id == "done-a"))
   ' >/dev/null || fail "landed must merge secondmate-home Done with main-home Done: $json"
-  [ "$(grep -c '^gh-axi api POST graphql ' "$home/net.log")" = 1 ] || fail "secondmate merges must share the batch"
+  [ "$(grep -c '^gh-axi api POST /graphql ' "$home/net.log")" = 1 ] || fail "secondmate merges must share the batch"
   pass "landed includes secondmate-managed merges alongside main-home merges"
 }
 
@@ -3277,7 +3279,7 @@ EOF
 EOF
   json=$(run "$home" "$fakebin" --json)
   printf '%s' "$json" | jq -e '
-    (.merged_prs | length) == 2
+    ([.merged_prs[].id] | sort) == ["completed-unverified", "done-a", "mate-landed"]
     and (.merged_prs | any(.id == "done-a" and .title == "Add status-page freshness: 95% & café"))
     and (.pr_evidence | any(.id == "ship-task" and .state == "open" and .checks == "not_collected"))
     and (.project_progress | any(.goal == "Accurate status page" and .merged_prs == 1 and .pending == "ship-task"))
@@ -3323,7 +3325,7 @@ test_pr_truth_partial_unavailable() {
 
 test_pr_truth_shared_deadline_and_latency() {
   local home fakebin json started elapsed
-  home=$(make_home pr-latency); write_large_fixture "$home" 5
+  home=$(make_home pr-latency); write_large_fixture "$home" 5 ship
   fakebin=$(make_fakebin "$home"); : > "$home/net.log"
   started=$(perl -MTime::HiRes=time -e 'printf "%.0f\n", time()*1000')
   json=$(run "$home" "$fakebin" --json)
