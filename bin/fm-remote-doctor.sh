@@ -13,12 +13,12 @@
 # fm-remote session. Its account therefore needs the Firstmate-owned Aqua Herdr
 # agent plus the sibling dev.firstmate.remote-job worker that runs normal fm-on
 # commands through the Aqua or Linux job-worker path. On darwin, that Herdr
-# agent starts the server through /bin/zsh -lc so the Aqua login session gets
-# login-shell environment and login-keychain access; exec keeps herdr in the
-# foreground under launchd. Doctor remains invokable over the plain-SSH
-# bootstrap path to inspect and repair that worker. SSH cannot create an Aqua
-# session, so a host with no GUI login is a human gap rather than something
-# --fix attempts to bypass.
+# agent starts the server through the remote account's login shell (`-l -c`)
+# so the Aqua login session gets login-shell environment and login-keychain
+# access; exec keeps herdr in the foreground under launchd. Doctor remains
+# invokable over the plain-SSH bootstrap path to inspect and repair that worker.
+# SSH cannot create an Aqua session, so a host with no GUI login is a human
+# gap rather than something --fix attempts to bypass.
 #
 # Line protocol, one fact per line, stable for script consumers:
 #   mode=check|fix
@@ -71,10 +71,6 @@ LAUNCH_AGENT_DIR="${HOME:-}/Library/LaunchAgents"
 LAUNCH_AGENT_PLIST="$LAUNCH_AGENT_DIR/$LAUNCH_AGENT_LABEL.plist"
 LAUNCH_AGENT_LOG_DIR="${HOME:-}/Library/Logs"
 LAUNCH_AGENT_LOG="$LAUNCH_AGENT_LOG_DIR/$LAUNCH_AGENT_LABEL.log"
-# System zsh on darwin always sources login files (.zshenv/.zprofile) and
-# never .zshrc unless the shell is interactive. Do not resolve a user zsh:
-# launchd must start a login shell that is always present on macOS.
-LAUNCH_AGENT_SHELL=/bin/zsh
 ENTRYPOINT_LINK="${HOME:-}/.local/bin/fm-remote-entrypoint.sh"
 
 usage() { sed -n '2,5p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
@@ -178,6 +174,39 @@ launch_agent_shell_quote() { # <value>
   printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
 }
 
+# Directory Services UserShell is the account's real login shell on darwin
+# (bash, fish, zsh, ...). Fall back without failing the render: $SHELL, then
+# /bin/zsh, then /bin/sh. Separate -l and -c so fish accepts the flags.
+resolve_launch_agent_shell() {
+  local user raw shell
+  LAUNCH_AGENT_SHELL_SOURCE=
+  user=$(id -un 2>/dev/null || true)
+  if [ -n "$user" ] && command -v dscl >/dev/null 2>&1; then
+    raw=$(dscl . -read "/Users/$user" UserShell 2>/dev/null || true)
+    shell=$(printf '%s\n' "$raw" | awk '
+      $1 == "UserShell:" && NF >= 2 { print $2; exit }
+      $1 ~ /^\// { print $1; exit }
+    ')
+    if [ -n "$shell" ] && [ -x "$shell" ]; then
+      LAUNCH_AGENT_SHELL_SOURCE=dscl
+      printf '%s' "$shell"
+      return 0
+    fi
+  fi
+  if [ -n "${SHELL:-}" ] && [ -x "$SHELL" ]; then
+    LAUNCH_AGENT_SHELL_SOURCE=SHELL
+    printf '%s' "$SHELL"
+    return 0
+  fi
+  if [ -x /bin/zsh ]; then
+    LAUNCH_AGENT_SHELL_SOURCE=/bin/zsh
+    printf '%s' /bin/zsh
+    return 0
+  fi
+  LAUNCH_AGENT_SHELL_SOURCE=/bin/sh
+  printf '%s' /bin/sh
+}
+
 # Login-shell command that execs the resolved herdr so launchd keeps one
 # foreground process in the Aqua session (login-keychain access) instead of
 # letting herdr self-daemonize into a Background session. KeepAlive stays
@@ -191,7 +220,8 @@ launch_agent_exec_command() { # <resolved-herdr-path>
 }
 
 render_launch_agent() { # <resolved-herdr-path>
-  local herdr_bin=$1 exec_cmd
+  local herdr_bin=$1 exec_cmd shell
+  shell=$(resolve_launch_agent_shell)
   exec_cmd=$(launch_agent_exec_command "$herdr_bin")
   cat <<XML
 <?xml version="1.0" encoding="UTF-8"?>
@@ -202,8 +232,9 @@ render_launch_agent() { # <resolved-herdr-path>
 	<string>$LAUNCH_AGENT_LABEL</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>$LAUNCH_AGENT_SHELL</string>
-		<string>-lc</string>
+		<string>$shell</string>
+		<string>-l</string>
+		<string>-c</string>
 		<string>$exec_cmd</string>
 	</array>
 	<key>LimitLoadToSessionType</key>
@@ -231,15 +262,16 @@ launch_agent_contract_matches() {
 }
 
 launch_agent_loaded_contract_matches() {
-  local loaded herdr_bin exec_compact shell_compact plist_compact log_compact args
+  local loaded herdr_bin exec_compact shell shell_compact plist_compact log_compact args
   herdr_bin=$(command -v herdr 2>/dev/null) || return 1
   loaded=$(launchctl print "gui/$UID_NUM/$LAUNCH_AGENT_LABEL" 2>/dev/null) || return 1
   loaded=$(printf '%s' "$loaded" | tr -d ' \t\r\n') || return 1
   exec_compact=$(launch_agent_exec_command "$herdr_bin" | tr -d ' \t\r\n') || return 1
-  shell_compact=$(printf '%s' "$LAUNCH_AGENT_SHELL" | tr -d ' \t\r\n') || return 1
+  shell=$(resolve_launch_agent_shell) || return 1
+  shell_compact=$(printf '%s' "$shell" | tr -d ' \t\r\n') || return 1
   plist_compact=$(printf '%s' "$LAUNCH_AGENT_PLIST" | tr -d ' \t\r\n') || return 1
   log_compact=$(printf '%s' "$LAUNCH_AGENT_LOG" | tr -d ' \t\r\n') || return 1
-  args="arguments={${shell_compact}-lc${exec_compact}}"
+  args="arguments={${shell_compact}-l-c${exec_compact}}"
   [[ "$loaded" == *"path=$plist_compact"* ]] || return 1
   [[ "$loaded" == *"program=$shell_compact"* ]] || return 1
   [[ "$loaded" == *"$args"* ]] || return 1
@@ -625,7 +657,7 @@ fix_report() { # <check> applied|failed <text>
 }
 
 write_launch_agent() {
-  local herdr_bin tmp
+  local herdr_bin tmp shell
   if ! herdr_bin=$(command -v herdr 2>/dev/null); then
     fix_report launchagent failed "herdr does not resolve, so no launch agent was written"
     return 1
@@ -643,13 +675,18 @@ write_launch_agent() {
   mkdir -p "$LAUNCH_AGENT_LOG_DIR" 2>/dev/null || true
   tmp="$LAUNCH_AGENT_DIR/.$LAUNCH_AGENT_LABEL.plist.tmp.$$"
   render_launch_agent "$herdr_bin" > "$tmp"
+  shell=$(resolve_launch_agent_shell)
   chmod 0644 "$tmp" 2>/dev/null || true
   if ! mv -f -- "$tmp" "$LAUNCH_AGENT_PLIST" 2>/dev/null; then
     rm -f -- "$tmp"
     fix_report launchagent failed "cannot publish $LAUNCH_AGENT_PLIST"
     return 1
   fi
-  fix_report launchagent applied "wrote the Aqua-scoped $LAUNCH_AGENT_LABEL launch agent running $herdr_bin server"
+  if [ "${LAUNCH_AGENT_SHELL_SOURCE:-}" != dscl ]; then
+    printf 'note: launch-agent login-shell=%s source=%s (Directory Services UserShell was unavailable)\n' \
+      "$shell" "${LAUNCH_AGENT_SHELL_SOURCE:-unknown}"
+  fi
+  fix_report launchagent applied "wrote the Aqua-scoped $LAUNCH_AGENT_LABEL launch agent running $herdr_bin server via $shell -l -c"
 }
 
 # Reload rather than plain bootstrap so a rewritten plist replaces a stale

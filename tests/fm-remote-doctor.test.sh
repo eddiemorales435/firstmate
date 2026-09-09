@@ -31,15 +31,18 @@ ln -sf "$(command -v git)" "$TOOLS/git"
 ln -sf "$(command -v jq)" "$TOOLS/jq"
 BASE_PATH="$TOOLS:/usr/bin:/bin:/usr/sbin:/sbin"
 
-# new_case <Darwin|Linux> [with-herdr] [gui]
+# new_case <Darwin|Linux> [with-herdr] [gui] [login-shell]
 # Builds one isolated account fixture and points the module-level CASE_*
 # variables at it. "with-herdr" installs the fake herdr CLI; "gui" makes the
-# fake launchctl report an existing Aqua login session.
+# fake launchctl report an existing Aqua login session. login-shell is the
+# Directory Services UserShell the fake dscl reports (default /bin/sh so the
+# fixture is portable to hosts without /bin/zsh).
 new_case() {
   local platform=$1 want_herdr=${2:-with-herdr} want_gui=${3:-gui}
   unset CASE_REMOTE_JOB_ACTIVE
   unset CASE_PLATFORM_OVERRIDE
   CASE_N=$((CASE_N + 1))
+  CASE_LOGIN_SHELL=${4:-/bin/sh}
   CASE_DIR="$TMP_ROOT/case$CASE_N"
   CASE_BIN="$CASE_DIR/bin"
   CASE_HOME="$CASE_DIR/home"
@@ -114,10 +117,11 @@ EOF
       *)
         cat > "$loaded" <<EOF
 path = $FM_FAKE_PLIST
-program = /bin/zsh
+program = $FM_FAKE_LOGIN_SHELL
 arguments = {
-	/bin/zsh
-	-lc
+	$FM_FAKE_LOGIN_SHELL
+	-l
+	-c
 	exec '$FM_FAKE_HERDR_BIN' server --session 'fm-remote'
 }
 stdout path = $FM_FAKE_LAUNCH_AGENT_LOG
@@ -158,6 +162,16 @@ exit 0
 SH
     chmod +x "$CASE_BIN/$forbidden"
   done
+
+  cat > "$CASE_BIN/dscl" <<'SH'
+#!/usr/bin/env bash
+set -u
+if [ "${1:-}" = . ] && [ "${2:-}" = -read ] && [ "${4:-}" = UserShell ]; then
+  printf 'UserShell: %s\n' "${FM_FAKE_LOGIN_SHELL:-/bin/sh}"
+  exit 0
+fi
+exit 1
+SH
 
   if [ "$want_herdr" = with-herdr ]; then
     cat > "$CASE_BIN/herdr" <<'SH'
@@ -203,7 +217,7 @@ SH
 #!/usr/bin/env bash
 exit 0
 SH
-  chmod +x "$CASE_BIN/uname" "$CASE_BIN/launchctl" "$CASE_BIN/tasks-axi" "$CASE_BIN/treehouse" "$CASE_BIN/claude"
+  chmod +x "$CASE_BIN/uname" "$CASE_BIN/launchctl" "$CASE_BIN/dscl" "$CASE_BIN/tasks-axi" "$CASE_BIN/treehouse" "$CASE_BIN/claude"
   cat > "$CASE_BIN/sleep" <<'SH'
 #!/usr/bin/env bash
 exit 0
@@ -228,6 +242,7 @@ doctor() {
     FM_FAKE_JOB_PLIST="$CASE_JOB_PLIST" \
     FM_FAKE_JOB_WORKER="$ROOT/bin/fm-remote-job-worker.sh" \
     FM_FAKE_LAUNCH_AGENT_LOG="$CASE_HOME/Library/Logs/$LABEL.log" \
+    FM_FAKE_LOGIN_SHELL="${CASE_LOGIN_SHELL:-/bin/sh}" \
     FM_REMOTE_JOB_PLATFORM_OVERRIDE="${CASE_PLATFORM_OVERRIDE-}" \
     FM_REMOTE_JOB_ACTIVE="${CASE_REMOTE_JOB_ACTIVE-1}" \
     "$ROOT/bin/fm-remote-doctor.sh" "$@" 2>&1
@@ -240,10 +255,11 @@ write_loaded_contract() { # <herdr-path> [properties]
   local herdr_bin=$1 properties=${2:-'keepalive | runatload | inferred program'}
   cat > "$CASE_STATE/loaded-$LABEL" <<EOF
 path = $CASE_PLIST
-program = /bin/zsh
+program = $CASE_LOGIN_SHELL
 arguments = {
-	/bin/zsh
-	-lc
+	$CASE_LOGIN_SHELL
+	-l
+	-c
 	exec '$herdr_bin' server --session 'fm-remote'
 }
 stdout path = $CASE_HOME/Library/Logs/$LABEL.log
@@ -255,17 +271,19 @@ EOF
 # Parse the doctor's owned launch-agent plist and assert the login-shell
 # argv contract. The plist is Firstmate's output, so semantic structure is
 # in bounds; never match the XML source as a substring.
-assert_herdr_launch_agent_contract() { # <plist> <herdr-bin>
-  local plist=$1 herdr_bin=$2 json argv0 argv1 cmd
+assert_herdr_launch_agent_contract() { # <plist> <herdr-bin> [login-shell]
+  local plist=$1 herdr_bin=$2 expected_shell=${3:-$CASE_LOGIN_SHELL} json argv0 argv1 argv2 cmd
   json=$(python3 -c 'import json,plistlib,sys; print(json.dumps(plistlib.load(open(sys.argv[1], "rb"))))' "$plist") \
     || fail "could not parse $plist as a plist"
   argv0=$(printf '%s' "$json" | jq -r '.ProgramArguments[0]')
   argv1=$(printf '%s' "$json" | jq -r '.ProgramArguments[1]')
-  cmd=$(printf '%s' "$json" | jq -r '.ProgramArguments[2]')
-  [ "$argv0" = /bin/zsh ] || fail "ProgramArguments[0] is $argv0, not /bin/zsh"
-  [ "$argv1" = -lc ] || fail "ProgramArguments[1] is $argv1, not -lc"
+  argv2=$(printf '%s' "$json" | jq -r '.ProgramArguments[2]')
+  cmd=$(printf '%s' "$json" | jq -r '.ProgramArguments[3]')
+  [ "$argv0" = "$expected_shell" ] || fail "ProgramArguments[0] is $argv0, not the resolved login shell $expected_shell"
+  [ "$argv1" = -l ] || fail "ProgramArguments[1] is $argv1, not -l"
+  [ "$argv2" = -c ] || fail "ProgramArguments[2] is $argv2, not -c"
   [ "$cmd" = "exec '$herdr_bin' server --session 'fm-remote'" ] \
-    || fail "ProgramArguments[2] is not exec of $herdr_bin for session fm-remote: $cmd"
+    || fail "ProgramArguments[3] is not exec of $herdr_bin for session fm-remote: $cmd"
   [ "$(printf '%s' "$json" | jq -r '.LimitLoadToSessionType')" = Aqua ] \
     || fail "LimitLoadToSessionType is not Aqua"
   [ "$(printf '%s' "$json" | jq -r '.RunAtLoad')" = true ] \
@@ -517,6 +535,14 @@ assert_contains "$DOCTOR_OUT" 'error: this host is not ready for a remote second
   "a remaining human gap did not fail the readiness verdict"
 assert_no_dangerous_calls "the doctor tried to create a login session by force"
 pass "human gaps are reported with their operator step and never claimed as fixed"
+
+# --- a non-zsh login shell is rendered with separate -l and -c --------------
+
+new_case Darwin with-herdr gui /bin/bash
+doctor --fix
+expect_code 0 "$DOCTOR_RC" "--fix left a bash-login-shell host unready"
+assert_herdr_launch_agent_contract "$CASE_PLIST" "$CASE_BIN/herdr" /bin/bash
+pass "a bash Directory Services login shell is rendered with -l -c"
 
 # --- linux has no launch agent, and --fix starts the server directly ---------
 
