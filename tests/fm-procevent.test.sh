@@ -2500,4 +2500,35 @@ wait_gone "$RETRY_DESCENDANT" \
   || fail "the guard stopped retrying before the expired runner's descendant was reaped"
 pass "a stop the guard cannot prove is retried until the expired runner is reaped"
 
+# A denied owner-file create must not become an unbounded stale-lock takeover.
+LOCK_DENIED_HOME="$TMP_ROOT/lock-denied-home"
+LOCK_DENIED_BIN="$TMP_ROOT/lock-denied-bin"
+mkdir -p "$LOCK_DENIED_HOME/state" "$LOCK_DENIED_BIN"
+pe_register "$LOCK_DENIED_HOME" lavish lock-denied-src -- /usr/bin/true >/dev/null
+cp "$LOCK_DENIED_HOME/state/procevent/lock-denied-src.source" "$TMP_ROOT/lock-denied-source.before"
+LOCK_DENIED_MKTEMP=$(command -v mktemp)
+cat > "$LOCK_DENIED_BIN/mktemp" <<'DENY'
+#!/usr/bin/env bash
+case "$*" in *.owner.XXXXXX*) exit 1 ;; esac
+exec "$FM_TEST_REAL_MKTEMP" "$@"
+DENY
+chmod +x "$LOCK_DENIED_BIN/mktemp"
+# shellcheck source=bin/fm-timeout-lib.sh
+. "$ROOT/bin/fm-timeout-lib.sh"
+lock_denied_rc=0
+FM_HOME="$LOCK_DENIED_HOME" PATH="$LOCK_DENIED_BIN:$PATH" \
+  FM_TEST_REAL_MKTEMP="$LOCK_DENIED_MKTEMP" FUNCNEST=48 \
+  fm_run_timed 5 "$ROOT/bin/fm-procevent.sh" reconcile \
+  > "$TMP_ROOT/lock-denied.out" 2>&1 || lock_denied_rc=$?
+[ "$lock_denied_rc" -eq 1 ] || fail "denied reconcile did not return a bounded error (rc=$lock_denied_rc)"
+assert_contains "$(cat "$TMP_ROOT/lock-denied.out")" 'started=0 stopped=0 uncertain=' \
+  "denied reconcile reports skipped source checks"
+grep -Eq 'uncertain=[1-9][0-9]*' "$TMP_ROOT/lock-denied.out" \
+  || fail "denied reconcile reported no uncertainty"
+cmp -s "$LOCK_DENIED_HOME/state/procevent/lock-denied-src.source" "$TMP_ROOT/lock-denied-source.before" \
+  || fail "denied reconcile changed the source registration"
+assert_absent "$LOCK_DENIED_HOME/state/procevent/lock-denied-src.runner" "denied reconcile starts no runner"
+pe "$LOCK_DENIED_HOME" retire lock-denied-src >/dev/null
+pass "denied reconcile preserves its source and reports uncertainty without recursion"
+
 printf '\nall procevent tests passed\n'

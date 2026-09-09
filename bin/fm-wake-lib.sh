@@ -506,14 +506,14 @@ fm_lock_claim() {
 fm_lock_try_create() {
   local lockdir=$1 allowed_steal_owner=${2:-} ownerdir
   FM_LOCK_OWNER_DIR=
-  ownerdir=$(fm_lock_owner_dir "$lockdir") || return 1
+  ownerdir=$(fm_lock_owner_dir "$lockdir") || return 2
   if [ -e "$lockdir" ] || [ -L "$lockdir" ]; then
     fm_lock_discard_owner "$ownerdir"
     return 1
   fi
   if ! fm_lock_prepare_owner "$ownerdir"; then
     fm_lock_discard_owner "$ownerdir"
-    return 1
+    return 2
   fi
   if ln -s "$ownerdir" "$lockdir" 2>/dev/null && fm_lock_points_to_owner "$lockdir" "$ownerdir"; then
     if fm_lock_claim "$lockdir" "$ownerdir" "$allowed_steal_owner"; then
@@ -882,6 +882,8 @@ fm_recovery_marker_reopen_announced() {
   fm_recovery_transition "$1" reopen-announced
 }
 
+# Return 0 for ownership, 1 for contention, or 2 for an owner creation error.
+# Only contention is eligible for a wait.
 fm_lock_try_acquire() {
   local lockdir=$1 pid steal cur rc steal_owner primary_owner current
   FM_LOCK_HELD_PID=
@@ -890,7 +892,10 @@ fm_lock_try_acquire() {
 
   if fm_lock_try_create "$lockdir"; then
     return 0
+  else
+    rc=$?
   fi
+  [ "$rc" -eq 1 ] || return "$rc"
 
   fm_current_pid current || return 1
   pid=$(cat "$lockdir/pid" 2>/dev/null || true)
@@ -906,9 +911,11 @@ fm_lock_try_acquire() {
     fm_lock_remove_path "$lockdir" || true
     if fm_lock_try_create "$lockdir"; then
       return 0
+    else
+      rc=$?
     fi
     FM_LOCK_HELD_PID=$(cat "$lockdir/pid" 2>/dev/null || true)
-    return 1
+    return "$rc"
   fi
   if fm_pid_alive "$pid"; then
     FM_LOCK_HELD_PID=$pid
@@ -920,10 +927,13 @@ fm_lock_try_acquire() {
   fi
 
   steal="$lockdir.steal"
-  if ! fm_lock_try_acquire "$steal"; then
+  if fm_lock_try_acquire "$steal"; then
+    rc=0
+  else
+    rc=$?
     FM_LOCK_HELD_PID=$(cat "$lockdir/pid" 2>/dev/null || true)
     FM_LOCK_OWNER_DIR=
-    return 1
+    return "$rc"
   fi
   steal_owner=${FM_LOCK_OWNER_DIR:-}
 
@@ -972,6 +982,8 @@ fm_lock_try_acquire() {
     rc=0
     # shellcheck disable=SC2034 # Read by sourcing callers after lock acquisition.
     FM_LOCK_RECOVERED_PID=$cur
+  else
+    rc=$?
   fi
   if [ "$rc" -ne 0 ]; then
     # shellcheck disable=SC2034 # Read by callers after fm_lock_try_acquire returns.
@@ -983,8 +995,14 @@ fm_lock_try_acquire() {
 }
 
 fm_lock_acquire_wait() {
-  local lockdir=$1
-  while ! fm_lock_try_acquire "$lockdir"; do
+  local lockdir=$1 rc
+  while :; do
+    if fm_lock_try_acquire "$lockdir"; then
+      return 0
+    else
+      rc=$?
+    fi
+    [ "$rc" -eq 1 ] || return "$rc"
     sleep 0.1
   done
 }

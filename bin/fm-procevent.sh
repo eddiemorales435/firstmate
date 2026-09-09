@@ -47,6 +47,7 @@
 #            start a runner for any registered source that has no live owner.
 #            This is liveness repair only - it never discovers results by
 #            polling the source, because the child blocks on the source itself.
+#            Lock failures preserve registrations, count as uncertain, and return nonzero.
 # handled    Durably and idempotently record that a captured result has been
 #            fully handled: <source-id> <sequence>. Prints "handled: id seq"
 #            the first time for that exact source-and-sequence generation and
@@ -1174,7 +1175,7 @@ detach_runner() {  # <source-id>
 }
 
 cmd_reconcile() {
-  local rec id published started=0 stopped=0 uncertain=0 claim owner pid token identity claim_state stop_state
+  local rec id published started=0 stopped=0 uncertain=0 lock_errors=0 claim owner pid token identity claim_state stop_state
   owner_lease_refresh
   published=$(publish_pending)
 
@@ -1185,7 +1186,11 @@ cmd_reconcile() {
     [ -e "$claim" ] || continue
     id=${claim##*/}; id=${id%.claim}
     fm_procevent_source_id_valid "$id" || continue
-    fm_procevent_source_lock_acquire "$id" || continue
+    if ! fm_procevent_source_lock_acquire "$id"; then
+      uncertain=$((uncertain + 1))
+      lock_errors=$((lock_errors + 1))
+      continue
+    fi
     if [ -f "$(source_file "$id")" ] && [ ! -L "$(source_file "$id")" ]; then
       fm_procevent_source_lock_release "$id"
       continue
@@ -1225,7 +1230,11 @@ cmd_reconcile() {
       [ -e "$rec" ] || continue
       id=${rec##*/}; id=${id%.source}
       fm_procevent_source_id_valid "$id" || continue
-      fm_procevent_source_lock_acquire "$id" || continue
+      if ! fm_procevent_source_lock_acquire "$id"; then
+        uncertain=$((uncertain + 1))
+        lock_errors=$((lock_errors + 1))
+        continue
+      fi
       if [ -f "$(source_file "$id")" ] && [ ! -L "$(source_file "$id")" ]; then
         fm_procevent_claim_state_locked "$id"
         claim_state=$?
@@ -1264,6 +1273,7 @@ cmd_reconcile() {
     done
   fi
   printf 'reconciled: published=%s started=%s stopped=%s uncertain=%s\n' "$published" "$started" "$stopped" "$uncertain"
+  [ "$lock_errors" -eq 0 ]
 }
 
 # Stop a runner and the child it is blocked on. A runner started by reconcile is

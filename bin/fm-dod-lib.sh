@@ -10,12 +10,8 @@
 # mode is refused rather than silently rendered as the pipeline contract.
 # The block opens with the fixed machine-readable "Delivery contract: mode=<mode>"
 # line that bin/fm-spawn.sh checks a ship brief against.
-# This file is the one owner of the no-mistakes `--intent` contract: only the
-# brief's `## Captain's intent` subsection plus later captain words, never
-# `## Firstmate spec` and never the worker's own tradeoffs.
-# The string passed must be self-sufficient - it plus the codebase reconstructs
-# roughly the same specification - so a report, decision, or PR the intent
-# refers to is written into it as substance, never left as a pointer.
+# This file owns private intent provenance, professional no-mistakes input,
+# and the shared PR publication/review contract rendered into worker instructions.
 # bin/fm-brief.sh scaffolds those two `# Task` subsections; bin/fm-spawn.sh and
 # bin/fm-promote.sh refuse leftover `{TASK}` / `{FIRSTMATE_SPEC}` placeholders
 # through the helpers below. Other mentions of `--intent` point here rather than
@@ -145,20 +141,62 @@ fm_brief_marked_captain_words() {  # <task-body>
   '
 }
 
+fm_intent_contract() {
+  cat <<'EOF'
+When starting no-mistakes, pass `--intent` as a faithful, self-contained professional summary of the authorized captain intent.
+Use the private source in the launch overlay, or this brief's `## Captain's intent`, plus later captain clarifications.
+For legacy briefs, use only Task lines explicitly marked `Captain:`, `Captain's words:`, `Captain's ask:`, or `Captain's intent:`.
+If no marked source exists, ask firstmate before starting.
+Preserve every requested requirement, constraint, exclusion, and later approved decision.
+Resolve referenced reports, decisions, and PRs into their requested substance so the summary and codebase explain the complete task.
+Do not relabel `## Firstmate spec`, worker choices, or agent tradeoffs as captain intent.
+Keep the exact original wording in private task records for validation.
+Never publish raw prompts or copy conversational wording into `--intent`, PR prose, or public evidence.
+This contract replaces advice to copy captain words verbatim or enrich intent with unapproved implementation choices.
+EOF
+}
+
 fm_brief_intent_overlay() {  # <captain-intent>
   cat <<'EOF'
 
 # Current no-mistakes intent contract
 This section supersedes every earlier brief instruction about constructing `--intent`, but not later clarifications actually supplied by the captain.
-Use the serialized captain intent below plus any later words the captain actually supplied as `--intent`; never include Firstmate specification or other mixed Task content.
-
-## Captain intent authorized for --intent
 EOF
-  printf '%s\n' "$1"
+  fm_intent_contract
   cat <<'EOF'
 
-Firstmate-authored constraints, acceptance criteria, implementation details, decisions, and tradeoffs are specification, not captain intent.
-The Definition of done's rule that `--intent` must be self-sufficient still governs the string you pass: resolve any report, decision, or PR the intent above refers to into its substance rather than passing the pointer.
+## Private captain intent source
+EOF
+  printf '%s\n' "$1"
+}
+
+fm_pr_review_contract() {
+  cat <<'EOF'
+
+## PR publication and review
+Use simple English and start the PR body with `# Summary`.
+Describe additions and changes, with at most 100 words explaining intent.
+Keep required repository sections and preserve existing machine attestation accurately.
+Never invent attestation or publish private source requests, review packets, or raw findings.
+After each source push, follow the configured GitHub AI review cycle in the global instructions loaded by your harness.
+Read its actual wait and bot identification rules before concluding that review finished.
+If that contract is missing, report the missing path to firstmate instead of treating silence as a clean review.
+Inspect inline review comments, review summaries, and issue comments for the current PR head.
+Record the reviewed commit, bot evidence links, and finding dispositions privately.
+Address valid actionable findings through the selected delivery workflow, then repeat the required review cycle.
+Apply `ai-review-loop-finished` only after that cycle converges on the current code with no actionable findings remaining.
+Read the current head before and after labeling, and remove the label if it no longer matches the reviewed commit.
+Remove a stale completion label after a source change or a new actionable finding.
+A PR description or label edit alone does not invalidate unchanged source review.
+Reuse validation only when its code, relevant inputs, and environment remain unchanged.
+Required checks triggered by GitHub still apply.
+
+Keep AI review, CI, merge, and deployment readiness separate and tied to the current commit.
+Run the review cycle and label converged code while independent CI or deployment checks wait.
+A failed or unavailable Atlantis plan remains missing evidence, never a passing plan.
+Do not require lock coordination before independent work or repeatedly retry the same unchanged external failure.
+Never unlock another PR, bypass required checks, or infer merge or apply authority from a review label.
+Report external waits with evidence, the responsible owner, the next action, and the work that can continue.
 EOF
 }
 
@@ -199,9 +237,12 @@ fm_dod_block() {  # <mode> <task-id>
 Delivery contract: mode=direct-PR
 This task ships **direct-PR**: you raise the PR yourself, without the no-mistakes pipeline.
 The task is complete only when committed on your branch.
-When it is implemented and committed, push your branch and open a PR with \`gh-axi\`, then append \`done: PR {url}\` to the status file and stop.
+If the captain selected janitor-review, load that skill and complete its local review before publication.
+When implementation and the selected local review finish, push your branch and open a PR with \`gh-axi\`.
+Complete the PR review contract below, then append \`done: PR {url} AI review converged; CI {actual state}\` and stop.
 Do NOT run /no-mistakes. The configured merge authority decides whether to merge the PR; firstmate relays the outcome.
 EOF
+      fm_pr_review_contract
       ;;
     local-only)
       cat <<EOF
@@ -224,12 +265,9 @@ Firstmate will then instruct you to run /no-mistakes to validate and ship a PR.
 
 You drive no-mistakes by responding to its gates, not by implementing fixes.
 Follow the guidance no-mistakes itself provides for the mechanics: it loads when you invoke /no-mistakes, and \`no-mistakes axi run --help\` plus the \`help\` lines in each \`axi\` response are authoritative and version-matched to the installed binary.
-When starting no-mistakes, pass \`--intent\` as only this brief's \`## Captain's intent\` subsection plus any later words the captain actually said.
-For a legacy brief with no such subsection, include only words explicitly labeled \`Captain:\`, \`Captain's words:\`, \`Captain's ask:\`, or \`Captain's intent:\`; never copy its mixed \`# Task\` wholesale. If it has no provenance-marked captain words, stop and ask firstmate instead of starting no-mistakes.
-Do not include \`## Firstmate spec\`, later Firstmate build constraints, or your own decisions and tradeoffs.
-The \`--intent\` string you pass must be self-sufficient: that string plus the codebase must let a reader reconstruct roughly the same specification, without depending on a separate report, a PR, or context that lives only in this conversation.
-When the captain's intent refers to a report, decision, or PR ("do items 1, 2, 3, and 7 of the report"), write the substance of the referenced items into \`--intent\` in the captain's terms, not only the pointer; that substance is the captain's ask by reference, while Firstmate's build instructions and your own decisions still stay out.
-This replaces the no-mistakes skill's advice to enrich \`--intent\` with decisions and tradeoffs; that advice does not apply to Firstmate-dispatched work.
+EOF
+      fm_intent_contract
+      cat <<EOF
 Do not hand-edit, commit, or fix findings yourself while a run is active - the pipeline applies every fix.
 
 One drive call blocks until the next gate or outcome, which routinely outlives what your harness lets a single command run: Claude Code kills a command at ten minutes maximum, while one fix round is capped around thirty minutes and up to three rounds chain.
@@ -245,8 +283,16 @@ Two firstmate-specific rules layer on top of that guidance:
 - NEVER pass \`--yes\` (or \`-y\`) to \`no-mistakes axi run\` or \`no-mistakes axi respond\`. It is banned fleet-wide.
   It auto-resolves every gate including ask-user findings with no escalation, and answering your own ask-user finding is a hard rule violation.
 
-After /no-mistakes reports CI green (the CI-ready return point - do not wait for it to keep monitoring in the background until merge), append \`done: PR {url} checks green\` and stop. You are finished.
+Once the pipeline publishes the PR, follow the PR review contract below while CI runs.
+If approved source changes arrive during CI, inspect the installed help for a supported return of source ownership.
+Preserve local, published, and pipeline commits plus the PR identity before any authorized replacement or recovery.
+Do not send source findings to a completed step or repeatedly submit them to a CI handler that does not apply them.
+If no supported path exists, report the precise pipeline owner and preserved-head evidence to firstmate.
+Do not reset branches, abort an active run, skip required checks, or restart a shared daemon to force progress.
+After CI is green and AI review converges, append \`done: PR {url} checks green; AI review converged\` and stop.
+Use the CI-ready return point, without waiting for merge.
 EOF
+      fm_pr_review_contract
       ;;
     *)
       echo "error: fm_dod_block: unknown delivery mode '$mode'" >&2

@@ -381,6 +381,11 @@ STUB
   assert_grep "It is banned fleet-wide" "$payload" \
     "promoted no-mistakes worker did not receive the fleet-wide ban wording"
 
+  assert_grep "Keep the exact original wording in private task records for validation" "$payload" \
+    "promoted worker lost private intent validation"
+  assert_grep "If no supported path exists, report the precise pipeline owner" "$payload" \
+    "promoted worker lost the CI source-custody escalation"
+
   payload="$TMP_ROOT/promote-dod/payload-promote-dod-direct-pr"
   assert_grep "supersede the scout delivery rules and report-based Definition of done" "$payload" \
     "promoted worker retained the scout delivery contract"
@@ -394,6 +399,9 @@ STUB
     "promoted local-only worker lost its no-remote contract"
   assert_no_grep "no-mistakes axi respond" "$TMP_ROOT/promote-dod/payload-promote-dod-direct-pr" \
     "promoted direct-PR worker received the pipeline gate contract"
+  assert_grep 'ai-review-loop-finished' "$payload" "promoted direct-PR worker lost review labeling"
+  assert_grep 'If the captain selected janitor-review, load that skill' "$payload" \
+    "promoted direct-PR worker lost the selected review procedure"
   pass "fm-promote: a promoted worker receives the same mode-specific delivery contract a briefed one does"
 }
 
@@ -508,10 +516,10 @@ EOF
   assert_grep "supersedes every earlier brief instruction about constructing \`--intent\`" \
     "$home/data/$id/launch-brief.md" \
     "marked legacy spawn did not override its stale intent instruction"
-  assert_grep "plus any later words the captain actually supplied" \
+  assert_grep "plus later captain clarifications" \
     "$home/data/$id/launch-brief.md" \
     "marked legacy launch contract excluded later captain clarifications"
-  authorized=$(awk '$0 == "## Captain intent authorized for --intent" { emit=1; next } emit && /^$/ { exit } emit { print }' "$home/data/$id/launch-brief.md")
+  authorized=$(awk '$0 == "## Private captain intent source" { emit=1; next } emit && /^$/ { exit } emit { print }' "$home/data/$id/launch-brief.md")
   assert_contains "$authorized" "Fix the legacy dispatch boundary." \
     "marked legacy launch contract omitted captain words"
   assert_not_contains "$authorized" "Firstmate-authored constraint" \
@@ -534,20 +542,20 @@ EOF
   out=$(run_spawn "$home" "$fakebin" "$id" "$proj" claude --mode no-mistakes --yolo off)
   assert_present "$home/data/$id/launch-brief.md" \
     "migrated subsection brief did not receive the current launch contract"
-  authorized=$(awk '$0 == "## Captain intent authorized for --intent" { emit=1; next } emit && /^$/ { exit } emit { print }' "$home/data/$id/launch-brief.md")
-  assert_contains "$authorized" "Fix the migrated dispatch boundary." \
-    "migrated launch contract omitted Captain's intent"
+  authorized=$(awk '$0 == "## Private captain intent source" { emit=1; next } emit && /^$/ { exit } emit { print }' "$home/data/$id/launch-brief.md")
+  [ "$authorized" = "Fix the migrated dispatch boundary." ] \
+    || fail "migrated launch contract changed the private captain wording"
   assert_not_contains "$authorized" "Preserve the existing compatibility path." \
     "migrated launch contract included Firstmate spec in intent"
   assert_grep "supersedes every earlier brief instruction about constructing \`--intent\`" \
     "$home/data/$id/launch-brief.md" \
     "migrated launch contract did not supersede its stale mixed-Task DoD"
-  assert_grep "plus any later words the captain actually supplied" \
+  assert_grep "plus later captain clarifications" \
     "$home/data/$id/launch-brief.md" \
     "migrated launch contract excluded later captain clarifications"
-  assert_grep "The Definition of done's rule that \`--intent\` must be self-sufficient still governs" \
+  assert_grep "pass \`--intent\` as a faithful, self-contained professional summary" \
     "$home/data/$id/launch-brief.md" \
-    "migrated launch contract's overlay dropped the self-sufficiency pointer"
+    "migrated launch contract did not replace raw prompts with professional intent"
 
   id=delivery-legacy-unmarked-no-mistakes
   mkdir -p "$home/data/$id"

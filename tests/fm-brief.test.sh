@@ -295,7 +295,7 @@ ROWS
 }
 
 test_faster_paths_use_configured_authority_without_stacked_review() {
-  local home id brief
+  local home id brief mode
   home="$TMP_ROOT/configured-authority-home"
   write_registry "$home"
   id="brief-direct-authority-a4"
@@ -314,12 +314,26 @@ test_faster_paths_use_configured_authority_without_stacked_review() {
     "local-only brief hard-coded captain-only authority"
   assert_no_grep "Firstmate then reviews your branch diff" "$brief" \
     "local-only brief retained a personal review stacked on the selected delivery path"
-  assert_no_grep "pass \`--intent\` as only this brief's \`## Captain's intent\`" "$home/data/$id/brief.md" \
+  assert_no_grep "pass \`--intent\` as a faithful, self-contained professional summary" "$home/data/$id/brief.md" \
     "local-only brief must not include the no-mistakes --intent contract"
   id="brief-direct-intent-a4"
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" direct-proj --mode direct-PR >/dev/null 2>&1
-  assert_no_grep "pass \`--intent\` as only this brief's \`## Captain's intent\`" "$home/data/$id/brief.md" \
+  assert_no_grep "pass \`--intent\` as a faithful, self-contained professional summary" "$home/data/$id/brief.md" \
     "direct-PR brief must not include the no-mistakes --intent contract"
+  for mode in no-mistakes direct-PR; do
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "review-$mode" some-proj --mode "$mode" >/dev/null 2>&1
+    brief="$home/data/review-$mode/brief.md"
+    assert_grep "start the PR body with \`# Summary\`" "$brief" "PR summary contract missing"
+    assert_grep 'preserve existing machine attestation accurately' "$brief" "PR attestation contract missing"
+    assert_grep 'inline review comments, review summaries, and issue comments' "$brief" "review surfaces incomplete"
+    assert_grep 'Read the current head before and after labeling' "$brief" "review label lost commit binding"
+    assert_grep 'Run the review cycle and label converged code while independent CI or deployment checks wait' "$brief" \
+      "external CI incorrectly blocks independent review"
+    assert_grep 'A PR description or label edit alone does not invalidate unchanged source review' "$brief" \
+      "metadata correction incorrectly requires source review"
+  done
+  assert_no_grep '## PR publication and review' "$home/data/brief-local-authority-a4/brief.md" \
+    "local-only delivery must not require a PR review loop"
   pass "fm-brief.sh: faster paths use configured authority without stacked review"
 }
 
@@ -341,23 +355,20 @@ test_no_mistakes_dod_wording() {
   # shellcheck disable=SC2016  # single quotes are deliberate: the backticks must stay literal
   assert_grep '`help`' "$brief" \
     "no-mistakes DOD must render literal backticks around help"
-  assert_grep "pass \`--intent\` as only this brief's \`## Captain's intent\`" "$brief" \
-    "no-mistakes DOD must require --intent to be the Captain's intent subsection"
-  assert_grep "plus any later words the captain actually said" "$brief" \
-    "no-mistakes DOD must allow later captain words in --intent"
-  assert_grep "Do not include \`## Firstmate spec\`" "$brief" \
-    "no-mistakes DOD must keep Firstmate spec out of --intent"
-  assert_grep "or your own decisions and tradeoffs" "$brief" \
-    "no-mistakes DOD must keep worker tradeoffs out of --intent"
-  assert_grep "This replaces the no-mistakes skill's advice to enrich \`--intent\`" "$brief" \
-    "no-mistakes DOD must override the external skill's enrich-with-decisions guidance"
-  # A bare reference cannot preserve the captain's ask, so the rendered DOD states
-  # the self-sufficiency rule and requires referenced material to be resolved into
-  # its substance.
-  assert_grep "The \`--intent\` string you pass must be self-sufficient" "$brief" \
-    "no-mistakes DOD must require a self-sufficient --intent string"
-  assert_grep "write the substance of the referenced items into \`--intent\`" "$brief" \
-    "no-mistakes DOD must tell the worker to resolve report, decision, and PR references into substance"
+  assert_grep "pass \`--intent\` as a faithful, self-contained professional summary" "$brief" \
+    "no-mistakes intent must be professional prose, not a raw prompt"
+  assert_grep "plus later captain clarifications" "$brief" \
+    "no-mistakes intent must preserve later captain clarifications"
+  assert_grep "Do not relabel \`## Firstmate spec\`, worker choices, or agent tradeoffs as captain intent" "$brief" \
+    "no-mistakes intent must retain provenance boundaries"
+  assert_grep "Resolve referenced reports, decisions, and PRs into their requested substance" "$brief" \
+    "no-mistakes intent must resolve references into a self-contained task"
+  assert_grep "Keep the exact original wording in private task records for validation" "$brief" \
+    "the exact request must remain private validation input"
+  assert_grep "Never publish raw prompts or copy conversational wording" "$brief" \
+    "no-mistakes intent must not expose conversation in public output"
+  assert_grep "This contract replaces advice to copy captain words verbatim" "$brief" \
+    "no-mistakes intent must override old raw-prompt instructions"
 
   # The --yes ban is a fleet-wide prohibition, not a preference, and it must not
   # claim an enforcement the tool does not provide: this is instruction only.

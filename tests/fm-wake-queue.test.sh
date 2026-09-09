@@ -1555,6 +1555,26 @@ test_self_announced_append_guards() {
   pass "self-announced appends suppress only their own bytes and fail toward waking"
 }
 
+test_lock_creation_failure_returns_without_recursion() {
+  local dir state lock rc
+  dir=$(make_case lock-creation-failure)
+  state="$dir/state"
+  printf 'fixture\n' > "$dir/file-parent"
+  # shellcheck source=bin/fm-timeout-lib.sh
+  . "$ROOT/bin/fm-timeout-lib.sh"
+  for lock in "$dir/file-parent/lock" "$dir/missing-parent/lock"; do
+    rc=0
+    # shellcheck disable=SC2016 # The child Bash expands these arguments.
+    FM_STATE_OVERRIDE="$state" fm_run_timed 5 env FUNCNEST=48 bash -c '
+      . "$1"
+      fm_lock_acquire_wait "$2"
+    ' _ "$ROOT/bin/fm-wake-lib.sh" "$lock" > "$dir/result" 2>&1 || rc=$?
+    [ "$rc" -eq 2 ] || fail "uncreatable lock did not return a bounded creation error (rc=$rc)"
+  done
+  [ "$(cat "$dir/file-parent")" = fixture ] || fail "lock failure changed its parent file"
+  pass "lock creation errors return without recursion or waiting for contention"
+}
+
 # A trap that fires inside a lock's critical section abandons the holding
 # frame, and the exit path then re-acquires the same lock (a TERM inside a
 # recovery-marker section is the reproduced case: the watcher's reap wedged
@@ -1907,6 +1927,7 @@ test_historical_annotation_skips_announced_status() {
   pass "historical annotations replay nothing already announced and keep everything new"
 }
 
+test_lock_creation_failure_returns_without_recursion
 test_self_held_lock_reclaims_instead_of_deadlocking
 test_subshell_lock_ownership_without_bashpid
 test_bounded_lock_handoff_after_contention
