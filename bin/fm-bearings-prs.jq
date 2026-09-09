@@ -9,10 +9,8 @@ if $mode == "scope" then
   . as $snapshot
   | ([ $model.landed[] | select(.pr_url != null)
        | {id,owner,project:.repo,url:.pr_url,priority:0,completed_at} ]
-     + [ .tasks[] | select(.kind != "secondmate" and .pr.source == "meta")
-         | {id,owner:"(main)",project:(.backlog.repo // .project),url:.pr.url,priority:1,completed_at:null} ]
-     + [ .backlog.records[] | select(.structured and .state == "in_flight" and .hold_kind != "captain")
-         | {id,owner:"(main)",project:.repo,url:.pr_url,priority:1,completed_at:null} ]
+     + [ .recorded_prs[]
+         | {id,owner:"(main)",project:.repo,url,priority:(.priority + 1),completed_at} ]
      + [ (.secondmate_current.records // [])[] as $home
          | $home.recorded_prs[]?
          | {id,owner:$home.id,project:.repo,url,priority:1,completed_at:null} ])
@@ -30,7 +28,7 @@ if $mode == "scope" then
   | (if $all_repos == 1 then $groups else $groups[:$repo_limit] end) as $shown
   | {repos_total:($groups | length),repos_shown:($shown | length),
      total:($groups | map(length) | add // 0),
-     rows:([$shown[] | sort_by([.priority, .completed_at, .id]) | .[:$pr_limit] | .[]]
+     rows:([$shown[] | group_by(.priority) | map(sort_by([.completed_at, .id]) | reverse) | add | .[:$pr_limit] | .[]]
        | to_entries | map(.value + {alias:("p" + (.key | tostring))}))}
 elif $mode == "query" then
   "query { " + ([.rows[] |

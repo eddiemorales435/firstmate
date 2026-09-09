@@ -3263,6 +3263,10 @@ test_invalid_recorded_pr_urls_never_poison_valid_evidence() {
 test_default_pr_truth_states_scope_and_fidelity() {
   local home fakebin json
   home=$(make_home pr-truth); write_fixture "$home"
+  cat >> "$home/data/backlog.md" <<'EOF'
+- [x] completed-unverified - Completed implementation https://github.com/kunchenguid/firstmate/pull/8 (repo: firstmate) (kind: ship) (done 2026-07-11)
+- [x] answered-question - Completed decision https://github.com/unrelated/flood/pull/44 (repo: firstmate) (kind: captain) (done 2026-07-11)
+EOF
   fakebin=$(make_fakebin "$home")
   # A program is the structured goal; a private task prompt is not PR prose.
   cat >> "$home/data/backlog.md" <<'EOF'
@@ -3278,6 +3282,8 @@ EOF
     and (.pr_evidence | any(.id == "ship-task" and .state == "open" and .checks == "not_collected"))
     and (.project_progress | any(.goal == "Accurate status page" and .merged_prs == 1 and .pending == "ship-task"))
     and ([.pr_evidence[].deployment] | all(. == "unknown"))
+    and (.merged_prs | any(.id == "completed-unverified" and .title == "Ship 8"))
+    and (.pr_evidence | all(.id != "answered-question"))
   ' >/dev/null || fail "default PR state/title/goal truth is wrong: $json"
   [ "$(wc -l < "$home/net.log" | tr -d ' ')" = 1 ] || fail "PR truth used multiple calls"
   if grep -Eq 'unrelated|pr list|statusCheckRollup|body' "$home/net.log" "$home/net.log.query"; then

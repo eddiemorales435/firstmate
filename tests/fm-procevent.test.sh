@@ -27,6 +27,7 @@ cat > "$BLOCKER" <<'SH'
 # event; nothing here polls on a schedule. The wait is bounded so a stub that
 # escapes its test cannot keep spawning processes indefinitely.
 trigger=$1; shift
+[ -z "${BLOCKER_STARTED:-}" ] || printf 'started\n' > "$BLOCKER_STARTED"
 while [ ! -e "$trigger" ]; do
   [ "$SECONDS" -lt "${FM_TEST_STUB_MAX_BLOCK_SECONDS:-120}" ] || exit 75
   sleep 0.05
@@ -1015,8 +1016,8 @@ pass "retiring a never-completing source stops its runner and its blocked child"
 TRIG4="$TMP_ROOT/trigger-four"
 HZ="$TMP_ROOT/hz"; new_home "$HZ"
 pe_register "$HZ" lavish orphan-src -- "$BLOCKER" "$TRIG4" "orphan" >/dev/null
-pe "$HZ" reconcile >/dev/null
-sleep 0.5
+BLOCKER_STARTED="$TMP_ROOT/orphan-started" pe "$HZ" reconcile >/dev/null
+wait_for "$TMP_ROOT/orphan-started" || fail "orphan fixture child did not start"
 orphan_pid=$(sed -n '2p' "$FM_PROCEVENT_CLAIM_ROOT/orphan-src.claim" 2>/dev/null)
 if [ -z "$orphan_pid" ] || ! kill -0 "$orphan_pid" 2>/dev/null; then
   fail "orphan fixture runner did not start"

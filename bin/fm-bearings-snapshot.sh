@@ -20,6 +20,7 @@
 # FM_BEARINGS_PR_REPOS (10) caps repositories and FM_BEARINGS_PR_LIMIT (20) caps
 # identities per repository. Recent baseline identities take priority over current
 # work within each repository. No pagination, per-PR calls, retries, or PR cache.
+# Structured Done work remains a PR candidate even before its ledger records a merge.
 # --include-prs adds review/check fields to the same batch.
 # bin/fm-bearings-prs.jq implements this projection over canonical JSON.
 #
@@ -467,7 +468,7 @@ MODEL=$(printf '%s' "$SNAP" | jq \
       decisions_open: (if $all_decisions == 1 then $decisions_all else $decisions_all[:$decisions_n] end),
       landed: ($done | map({id, what:(.title | trunc(70)),
                             artifact:(landed_artifact // "-"),owner:.home_id,
-                            repo:(.repo // null), pr_url, completion:(.completion.verb // "done"),
+                            repo:(.repo // null), pr_url:(if landed_artifact == .pr_url then .pr_url else null end), completion:(.completion.verb // "done"),
                             completed_at:(.completion.date // null)})),
       gates: (if $all_queued == 1 then $gates_all else $gates_all[:$gates_n] end),
       reports: (if $all_reports == 1 then $reports_all else $reports_all[:$reports_n] end),

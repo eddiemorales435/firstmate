@@ -89,8 +89,11 @@
 #     schemas; a live ledger or cached copy missing either declaration or declaring
 #     an unsupported version is unavailable even when it contains no captain holds.
 #     These schemas also accept v1 summaries from older producers.
-#   secondmate_current records also carry optional recorded_prs[] (metadata PR
-#     URLs, capped by FM_SNAPSHOT_SECONDMATE_CHILDREN) and project_goals[] (in-flight
+#   recorded_prs[] contains task metadata and structured in-flight/Done work PR
+#     identities, excluding scouts, captain questions, and secondmates. The shared
+#     projection orders metadata first, then recent completions, without asserting merge.
+#   secondmate_current records also carry optional recorded_prs[] (these identities,
+#     capped by FM_SNAPSHOT_SECONDMATE_CHILDREN) and project_goals[] (in-flight
 #     structured programs and their dependency ids, capped by the queued bound).
 #     Old home ledgers omit these additive fields; null means unavailable, not empty.
 #     Landed rows preserve repo. These facts support Bearings without extra home reads.
@@ -942,6 +945,21 @@ main_inventory_json() {  # <backlog-json-file> <tasks-json-file>
 # validated parent read needs.
 # This mode never reads parent events or terminal text and never aggregates
 # nested secondmates.
+# Candidate identities come from task metadata and structured work records.
+# Delivery remains a separate verdict from the landed selector and GitHub.
+recorded_prs_json() {  # <backlog-json-file> <tasks-json-file>
+  jq -n --slurpfile backlog "$1" --slurpfile tasks "$2" '
+    def work: .kind != "scout" and .kind != "captain" and .kind != "secondmate" and .hold_kind != "captain";
+    ([$tasks[0][] | . as $task
+       | ([$backlog[0].records[] | select(.id == $task.id)][0] // {}) as $row
+       | select(work and ($row | work) and .pr.source == "meta" and .pr.url != null)
+       | {id,repo:($row.repo // .project),url:.pr.url,priority:0,completed_at:null}]
+     + [$backlog[0].records[] | select(work and .structured and (.state == "in_flight" or .state == "done") and .pr_url != null)
+        | {id,repo,url:.pr_url,priority:1,completed_at:(.completion.date // null)}])
+    | sort_by([.priority,.id]) | unique_by(.url)
+    | group_by(.priority) | map(sort_by([.completed_at,.id]) | reverse) | add // []'
+}
+
 secondmate_home_summary_json() {  # <backlog-json-file> <tasks-json-file>
   jq -n \
     --arg generated "$SNAPSHOT_NOW" \
@@ -952,7 +970,7 @@ secondmate_home_summary_json() {  # <backlog-json-file> <tasks-json-file>
     --argjson decisions_n "$FM_SNAPSHOT_SECONDMATE_DECISIONS" \
     --argjson landed_n "$FM_SNAPSHOT_SECONDMATE_LANDED_PER_HOME" \
     --slurpfile backlog "$1" \
-    --slurpfile tasks "$2" "$FM_LANDED_JQ_DEFS"'
+    --slurpfile tasks "$2" --slurpfile recorded_prs "$RECORDED_PRS_JSON_FILE" "$FM_LANDED_JQ_DEFS"'
     ($backlog[0]) as $backlog
     | ($tasks[0]) as $tasks
     | def trunc($n):
@@ -1024,8 +1042,7 @@ secondmate_home_summary_json() {  # <backlog-json-file> <tasks-json-file>
             repo:(($work.repo // .project // null) | if . == null then null else trunc(120) end),
             source:.current_state.source,
             doing:((.current_state.detail // "") | trunc(120))} ]) as $active_all
-    | ([$tasks[] | select(.pr.source == "meta" and .pr.url != null)
-        | {id,repo:(.backlog.repo // .project),url:.pr.url}]) as $recorded_prs
+    | $recorded_prs[0] as $recorded_prs
     | ([$owned_in_flight[] | select(.kind == "program")
         | {id,repo,goal:.title,blocked_by_ids,unresolved_blocker_ids}]) as $project_goals
     | ($captain_holds_all
@@ -1956,6 +1973,7 @@ JSON_TRANSPORT_DIR=$(mktemp -d "${TMPDIR:-/tmp}/fm-fleet-snapshot.XXXXXX") \
 BACKLOG_JSON_FILE="$JSON_TRANSPORT_DIR/backlog.json"
 TASKS_JSON_FILE="$JSON_TRANSPORT_DIR/tasks.json"
 MAIN_INVENTORY_JSON_FILE="$JSON_TRANSPORT_DIR/main-inventory.json"
+RECORDED_PRS_JSON_FILE="$JSON_TRANSPORT_DIR/recorded-prs.json"
 SCOUT_REPORTS_JSON_FILE="$JSON_TRANSPORT_DIR/scout-reports.json"
 SECONDMATE_CURRENT_JSON_FILE="$JSON_TRANSPORT_DIR/secondmate-current.json"
 SECONDMATE_LANDED_JSON_FILE="$JSON_TRANSPORT_DIR/secondmate-landed.json"
@@ -1963,6 +1981,9 @@ printf '%s\n' "$BACKLOG_JSON" > "$BACKLOG_JSON_FILE" \
   || { echo "fm-fleet-snapshot: temporary backlog file write failed" >&2; exit 1; }
 printf '%s\n' "$TASKS_JSON" > "$TASKS_JSON_FILE" \
   || { echo "fm-fleet-snapshot: temporary task file write failed" >&2; exit 1; }
+
+recorded_prs_json "$BACKLOG_JSON_FILE" "$TASKS_JSON_FILE" > "$RECORDED_PRS_JSON_FILE" \
+  || { echo "fm-fleet-snapshot: recorded PR projection failed" >&2; exit 1; }
 
 if [ "$OUTPUT_MODE" = secondmate-home-summary ]; then
   secondmate_home_summary_json "$BACKLOG_JSON_FILE" "$TASKS_JSON_FILE" \
@@ -1989,6 +2010,7 @@ jq -n \
   --arg projects "$PROJECTS" \
   --slurpfile backlog "$BACKLOG_JSON_FILE" \
   --slurpfile tasks "$TASKS_JSON_FILE" \
+  --slurpfile recorded_prs "$RECORDED_PRS_JSON_FILE" \
   --slurpfile main_inventory "$MAIN_INVENTORY_JSON_FILE" \
   --slurpfile scout_reports "$SCOUT_REPORTS_JSON_FILE" \
   --slurpfile secondmate_current "$SECONDMATE_CURRENT_JSON_FILE" \
@@ -2009,6 +2031,7 @@ jq -n \
      roots:{fm_root:$fm_root,state:$state,data:$data,config:$config,projects:$projects},
      backlog:$backlog,
      tasks:($tasks | map(. + {backlog:backlog_by_id(.id)})),
+     recorded_prs:$recorded_prs[0],
      main_inventory:$main_inventory,
      scout_reports:($scout_reports | map(. + {kind:report_kind(.id)})),
      secondmate_current:$secondmate_current,
