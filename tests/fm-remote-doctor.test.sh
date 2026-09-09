@@ -41,6 +41,8 @@ new_case() {
   local platform=$1 want_herdr=${2:-with-herdr} want_gui=${3:-gui}
   unset CASE_REMOTE_JOB_ACTIVE
   unset CASE_PLATFORM_OVERRIDE
+  unset CASE_DSCL_FAIL
+  unset CASE_ENV_SHELL
   CASE_N=$((CASE_N + 1))
   CASE_LOGIN_SHELL=${4:-/bin/sh}
   CASE_DIR="$TMP_ROOT/case$CASE_N"
@@ -166,6 +168,7 @@ SH
   cat > "$CASE_BIN/dscl" <<'SH'
 #!/usr/bin/env bash
 set -u
+[ "${FM_FAKE_DSCL_FAIL:-0}" != 1 ] || exit 1
 if [ "${1:-}" = . ] && [ "${2:-}" = -read ] && [ "${4:-}" = UserShell ]; then
   printf 'UserShell: %s\n' "${FM_FAKE_LOGIN_SHELL:-/bin/sh}"
   exit 0
@@ -243,6 +246,8 @@ doctor() {
     FM_FAKE_JOB_WORKER="$ROOT/bin/fm-remote-job-worker.sh" \
     FM_FAKE_LAUNCH_AGENT_LOG="$CASE_HOME/Library/Logs/$LABEL.log" \
     FM_FAKE_LOGIN_SHELL="${CASE_LOGIN_SHELL:-/bin/sh}" \
+    FM_FAKE_DSCL_FAIL="${CASE_DSCL_FAIL:-0}" \
+    SHELL="${CASE_ENV_SHELL-${SHELL-}}" \
     FM_REMOTE_JOB_PLATFORM_OVERRIDE="${CASE_PLATFORM_OVERRIDE-}" \
     FM_REMOTE_JOB_ACTIVE="${CASE_REMOTE_JOB_ACTIVE-1}" \
     "$ROOT/bin/fm-remote-doctor.sh" "$@" 2>&1
@@ -543,6 +548,23 @@ doctor --fix
 expect_code 0 "$DOCTOR_RC" "--fix left a bash-login-shell host unready"
 assert_herdr_launch_agent_contract "$CASE_PLIST" "$CASE_BIN/herdr" /bin/bash
 pass "a bash Directory Services login shell is rendered with -l -c"
+
+# --- shell resolution falls back to an executable environment shell, then sh -
+
+new_case Darwin with-herdr gui /bin/bash
+CASE_DSCL_FAIL=1
+CASE_ENV_SHELL=/bin/bash
+doctor --fix
+expect_code 0 "$DOCTOR_RC" "--fix rejected an executable SHELL fallback"
+assert_herdr_launch_agent_contract "$CASE_PLIST" "$CASE_BIN/herdr" /bin/bash
+
+new_case Darwin with-herdr gui /bin/sh
+CASE_DSCL_FAIL=1
+CASE_ENV_SHELL="$CASE_DIR/not-a-shell"
+doctor --fix
+expect_code 0 "$DOCTOR_RC" "--fix rejected the POSIX shell fallback"
+assert_herdr_launch_agent_contract "$CASE_PLIST" "$CASE_BIN/herdr" /bin/sh
+pass "shell resolution uses executable SHELL and POSIX fallbacks"
 
 # --- linux has no launch agent, and --fix starts the server directly ---------
 

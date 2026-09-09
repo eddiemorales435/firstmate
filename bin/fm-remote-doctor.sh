@@ -176,10 +176,9 @@ launch_agent_shell_quote() { # <value>
 
 # Directory Services UserShell is the account's real login shell on darwin
 # (bash, fish, zsh, ...). Fall back without failing the render: $SHELL, then
-# /bin/zsh, then /bin/sh. Separate -l and -c so fish accepts the flags.
+# /bin/sh. Separate -l and -c so fish accepts the flags.
 resolve_launch_agent_shell() {
   local user raw shell
-  LAUNCH_AGENT_SHELL_SOURCE=
   user=$(id -un 2>/dev/null || true)
   if [ -n "$user" ] && command -v dscl >/dev/null 2>&1; then
     raw=$(dscl . -read "/Users/$user" UserShell 2>/dev/null || true)
@@ -188,22 +187,14 @@ resolve_launch_agent_shell() {
       $1 ~ /^\// { print $1; exit }
     ')
     if [ -n "$shell" ] && [ -x "$shell" ]; then
-      LAUNCH_AGENT_SHELL_SOURCE=dscl
       printf '%s' "$shell"
       return 0
     fi
   fi
   if [ -n "${SHELL:-}" ] && [ -x "$SHELL" ]; then
-    LAUNCH_AGENT_SHELL_SOURCE=SHELL
     printf '%s' "$SHELL"
     return 0
   fi
-  if [ -x /bin/zsh ]; then
-    LAUNCH_AGENT_SHELL_SOURCE=/bin/zsh
-    printf '%s' /bin/zsh
-    return 0
-  fi
-  LAUNCH_AGENT_SHELL_SOURCE=/bin/sh
   printf '%s' /bin/sh
 }
 
@@ -681,10 +672,6 @@ write_launch_agent() {
     rm -f -- "$tmp"
     fix_report launchagent failed "cannot publish $LAUNCH_AGENT_PLIST"
     return 1
-  fi
-  if [ "${LAUNCH_AGENT_SHELL_SOURCE:-}" != dscl ]; then
-    printf 'note: launch-agent login-shell=%s source=%s (Directory Services UserShell was unavailable)\n' \
-      "$shell" "${LAUNCH_AGENT_SHELL_SOURCE:-unknown}"
   fi
   fix_report launchagent applied "wrote the Aqua-scoped $LAUNCH_AGENT_LABEL launch agent running $herdr_bin server via $shell -l -c"
 }
