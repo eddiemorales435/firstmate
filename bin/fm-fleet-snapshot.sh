@@ -88,6 +88,11 @@
 #     Structured-home input must declare the current hold-classifier schema; an
 #     older live ledger or cached copy is invalid even when it contains no captain
 #     holds, and leaves the home explicitly unreadable until its producer refreshes it.
+#   secondmate_current records also carry optional recorded_prs[] (metadata PR
+#     URLs, capped by FM_SNAPSHOT_SECONDMATE_CHILDREN) and project_goals[] (in-flight
+#     structured programs and their dependency ids, capped by the queued bound).
+#     Old home ledgers omit these additive fields; null means unavailable, not empty.
+#     Landed rows preserve repo. These facts support Bearings without extra home reads.
 #   secondmate_landed: {records[],truncated[],unreadable[],partial[]} - the
 #     compatibility landed-work roll-up derived from secondmate_current. Readable
 #     structured homes are partial, not unreadable, when an unavailable child state
@@ -944,6 +949,7 @@ secondmate_home_summary_json() {  # <backlog-json-file> <tasks-json-file>
             hold_age_days:(.hold_age_days // null),source:"backlog"} ]) as $captain_holds_all
     | ([ $backlog.records[]? | select(.state == "done" and .structured and .hold_kind != "captain")
          | {id:(.id | trunc(120)),title:(.title | trunc(120)),
+            repo:(.repo // null),
             pr_url:((.pr_url // null) | if . == null then null else trunc(500) end),
             report_path:((.report_path // null) | if . == null then null else trunc(500) end),
             local_note:((.local_note // null) | if . == null then null else trunc(120) end),completion} ]
@@ -989,6 +995,10 @@ secondmate_home_summary_json() {  # <backlog-json-file> <tasks-json-file>
             repo:(($work.repo // .project // null) | if . == null then null else trunc(120) end),
             source:.current_state.source,
             doing:((.current_state.detail // "") | trunc(120))} ]) as $active_all
+    | ([$tasks[] | select(.pr.source == "meta" and .pr.url != null)
+        | {id,repo:(.backlog.repo // .project),url:.pr.url}]) as $recorded_prs
+    | ([$owned_in_flight[] | select(.kind == "program")
+        | {id,repo,goal:.title,blocked_by_ids,unresolved_blocker_ids}]) as $project_goals
     | ($captain_holds_all
        + ([ $tasks[] as $t | ($t.hints.open_decisions // [])[]
             | {id:$t.id,key,verb,summary:(.summary | trunc(160)),reason:null,source:"status"} ])) as $decisions_all
@@ -1039,6 +1049,8 @@ secondmate_home_summary_json() {  # <backlog-json-file> <tasks-json-file>
         invalidity:$invalidity,
         state:$state,
         active_children:$active_all[:$child_n],
+        recorded_prs:$recorded_prs[:$child_n],
+        project_goals:$project_goals[:$queued_n],
         decisions_open:$decisions_all[:$decisions_n],
         holds:$holds_all[:$queued_n],
         queued:([$queued_all[] | {id:(.id | trunc(120)),title:(.title | trunc(120)),
@@ -1058,6 +1070,8 @@ secondmate_home_summary_json() {  # <backlog-json-file> <tasks-json-file>
         endpoints:([$tasks[] | {id,state:.current_state.state,source:.current_state.source,
           endpoint:(.endpoint + {target:((.endpoint.target // null) | if . == null then null else trunc(240) end)})}][:$child_n]),
         counts:{
+          recorded_prs:($recorded_prs | length),
+          project_goals:($project_goals | length),
           active_children:($active_all | length),
           decisions_open:($decisions_all | length),
           holds:($holds_all | length),
@@ -1066,6 +1080,8 @@ secondmate_home_summary_json() {  # <backlog-json-file> <tasks-json-file>
           endpoints:($tasks | length)
         },
         omitted:[
+          (if ($recorded_prs | length) > $child_n then {surface:"recorded_prs",count:(($recorded_prs | length) - $child_n)} else empty end),
+          (if ($project_goals | length) > $queued_n then {surface:"project_goals",count:(($project_goals | length) - $queued_n)} else empty end),
           (if ($active_all | length) > $child_n then {surface:"active_children",count:(($active_all | length) - $child_n)} else empty end),
           (if ($decisions_all | length) > $decisions_n then {surface:"decisions_open",count:(($decisions_all | length) - $decisions_n)} else empty end),
           (if ($queued_all | length) > $queued_n then {surface:"queued",count:(($queued_all | length) - $queued_n)} else empty end),
@@ -1810,6 +1826,12 @@ secondmate_current_json() {  # <parent-tasks-json-file> <output-file>
            trust:(if $summary_valid then "complete" else "partial-structured" end),parent_event_role:"historical-only"},
          freshness:{status:$summary_freshness,observed_at:$observed,age_seconds:$summary_age},
          active_children:$summary.active_children,
+         recorded_prs:($summary.recorded_prs | if type == "array" and all(.[];
+           type == "object" and (.id | type == "string") and (.url | type == "string")) then . else null end),
+         project_goals:($summary.project_goals | if type == "array" and all(.[];
+           type == "object" and (.id | type == "string") and (.goal | type == "string")
+           and (.blocked_by_ids | type == "array" and all(.[]; type == "string"))
+           and (.unresolved_blocker_ids | type == "array" and all(.[]; type == "string"))) then . else null end),
          decisions_open:$summary.decisions_open,holds:$summary.holds,queued:$summary.queued,
          landed:$summary.landed,endpoints:$summary.endpoints,counts:$summary.counts,omitted:$summary.omitted,
          parent_event:{raw:$event_raw,note:$event_note,age_seconds:$event_age,open_activities:$activities,open_decisions:$decisions,activity_scan:$activity_scan,reconciliation:$reconciliation},

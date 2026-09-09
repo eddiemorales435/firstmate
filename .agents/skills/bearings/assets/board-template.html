@@ -627,7 +627,9 @@ __FM_BEARINGS_BOARD_DATA__
 
   /* Landed */
   var ld = document.getElementById("bb-landed");
-  if (!data.landed.length) ld.appendChild(el("div", "bb-empty", "No recent completions are in the current baseline."));
+  if (data.pr_evidence_note) ld.appendChild(el("div", "bb-empty", data.pr_evidence_note));
+  if (!data.landed.length) ld.appendChild(el("div", "bb-empty", data.pr_evidence_note
+    ? "No confirmed completions are shown." : "No recent completions are in the current baseline."));
   data.landed.forEach(function (t) {
     var row = el("div", "bb-row");
     var chk = el("span", "bb-row__check");
@@ -644,6 +646,7 @@ __FM_BEARINGS_BOARD_DATA__
     }
     ld.appendChild(row);
   });
+  if (data.pr_progress) ld.appendChild(el("div", "bb-empty", data.pr_progress));
 
   /* Charted Next + dispatch picker */
   var ch = document.getElementById("bb-charted");

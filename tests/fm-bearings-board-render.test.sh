@@ -59,9 +59,9 @@ SH
 # Build the board from <charted-json> and return what the renderer produced.
 render() {  # <home> <charted-json> [charted_more] [charted_warning_more]
   local home=$1 charted=$2 more=${3:-0} warning_more=${4:-0} data="$1/payload.json"
-  jq -n --argjson charted "$charted" --argjson more "$more" --argjson warning_more "$warning_more" '{
+  jq -n --argjson charted "$charted" --argjson more "$more" --argjson warning_more "$warning_more" --arg note "${TEST_PR_NOTE:-}" --arg progress "${TEST_PR_PROGRESS:-}" '{
     schema:"fm-bearings-board.v1", home:"render-home", generated:"2026-08-26T00:00Z",
-    prs_live:false, captains_call:[], underway:[], landed:[],
+    prs_live:false, pr_evidence_note:$note, pr_progress:$progress, captains_call:[], underway:[], landed:[],
     charted:$charted, charted_more:$more, charted_warning_more:$warning_more}' > "$data"
   PATH="$home/fakebin:$PATH" FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
@@ -157,6 +157,21 @@ test_an_omitted_kind_keeps_the_existing_queued_rendering() {
   ' >/dev/null || fail "an omitted kind changed the existing queued badges: $out"
   pass "an omitted kind renders exactly as queued work always did"
 }
+
+test_pr_notes_render_as_text_without_changing_counts() {
+  local home out
+  home=$(make_home pr-notes)
+  out=$(TEST_PR_NOTE='PR truth unavailable; ledger age 1000s.' \
+    TEST_PR_PROGRESS='<b>Status page progress is unverified.</b>' render "$home" '[]')
+  printf '%s' "$out" | jq -e '
+    .landed == ["PR truth unavailable; ledger age 1000s.", "No confirmed completions are shown.",
+      "<b>Status page progress is unverified.</b>"]
+    and (.stats | any(.label == "landed recently" and .n == 0))
+  ' >/dev/null || fail "PR evidence/progress text was lost, rendered as HTML, or counted as landed work: $out"
+  pass "PR freshness and project progress render as text around the completion rows"
+}
+
+test_pr_notes_render_as_text_without_changing_counts
 
 test_a_warning_row_reads_as_a_repair_not_as_queued_work
 test_warnings_are_excluded_from_the_charted_next_count

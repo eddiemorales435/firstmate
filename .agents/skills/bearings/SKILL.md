@@ -3,7 +3,8 @@ name: bearings
 description: >-
   Generate a "pick up where I left off" fleet digest from firstmate's live fleet state.
   Use when the captain invokes /bearings or asks for a bearings report, morning brief, status report, catch-up, "where did I leave off", or "what's in the works".
-  Plain /bearings is chat-only by default, /bearings file explicitly writes the dated data/status-report-<YYYY-MM-DD>.md artifact, and /bearings lavish additionally builds and arms the interactive fleet board; live PR enrichment remains opt-in and composes with the other modes.
+  Plain /bearings includes managed PR merge truth in chat.
+  File and Lavish modes stay explicit, while review and CI detail stays opt-in.
   Also load this skill's board-wake handling when a procevent lavish wake's source id matches the canonical source id of the stable bearings board path.
 user-invocable: true
 metadata:
@@ -27,8 +28,8 @@ Board answers are acted on later under the normal authority rules; this skill's 
 - `/bearings lavish` gathers a fresh bounded snapshot, rebuilds and arms the interactive fleet board (the "Lavish board mode" section below), and renders the four-section chat digest with the board's URL inside it.
 - Treat `file` and `lavish` only as explicit invocation options in the slash command.
 - Do not treat natural-language requests such as "write a report", "save this", "persist it", "make a file", or "make a board" as file or lavish mode unless the invocation explicitly includes the standalone option.
-- When the captain asks to include PRs, pass the snapshot command's live-PR opt-in.
-- `/bearings include PRs` remains chat-only and makes the live-PR opt-in.
+- Every mode includes the bounded managed PR baseline by default.
+- `/bearings include PRs` remains chat-only and adds live review and CI detail.
 - `/bearings file include PRs` and `/bearings lavish include PRs` compose the same way.
 
 ## What it does
@@ -39,7 +40,8 @@ Board answers are acted on later under the normal authority rules; this skill's 
    Do not create or consult a second fleet-state reader, parser contract, status-event-tail interpretation, visible-session recap, ad-hoc project probe, or ad-hoc `gh-axi`/`gh` query.
    The command's header and `--help` output own its exact fields, bounds, opt-ins, and output contract.
    The default performs bounded concurrent remote-ledger reads for registered remote homes under one shared snapshot budget and may refresh the parent-side cache.
-   Only pass `--include-prs` when the captain asks for live GitHub PR enrichment.
+   Only pass `--include-prs` when the captain asks for review and CI detail beyond the default PR truth.
+   If the captain requests an offline digest, pass `--local-only` and state that live PR truth is unavailable.
    For registered secondmates, use the snapshot's structured-home classification and provenance.
    A parent event or bounded terminal contradiction is fallback evidence, never authority over readable structured home state.
    A decision is simply a task held for the captain (`captain-hold-lifecycle`), whatever its kind.
@@ -139,8 +141,9 @@ Every `/bearings` chat response renders EXACTLY these four sections, in THIS ord
 1. **Captain's Call** - ONLY unsuppressed items that need the captain's own action now: a decision to make, a PR to approve or merge, a credential or login to provide, or a blocker only the captain can clear.
    Deferred or aged holds follow the presentation safety rule above instead.
    Empty-state: "Nothing needs your action right now."
-2. **Recently Landed** - the bounded current recent-completions baseline: merged PRs, completed scouts, and finished local-only merges across the main fleet and every registered secondmate home.
+2. **Recently Landed** - render the PR baseline under the PR presentation rules below, followed by completed scouts and finished local-only work.
    Empty-state: "No recent completions are in the current baseline."
+   Use that empty-state only when the snapshot has no recorded completions or PR evidence gaps.
 3. **Underway** - live work progressing on its own, one line of current state per direct report.
    Empty-state: "Nothing is underway."
 4. **Charted Next** - queued or gated work waiting on the fleet or a date, deferred or aged captain-hold safety gates, plus action-free fleet-integrity warnings.
@@ -163,6 +166,35 @@ Rules that keep the contract unambiguous:
 - Detailed decisions, plans, full gate reasons, and evidence stay out of chat; file mode puts them in the report, while lavish mode puts only its payload-backed interactive detail on the board.
 - In file mode, include the report path or link inside the four-section digest without adding another heading.
 - In lavish mode, include the board URL inside the four-section digest the same way.
+
+## PR presentation rules
+
+Use these rules for the PR portion of Recently Landed in chat, file, and Lavish modes.
+The snapshot header owns collection, states, freshness, limits, and the structured fields.
+
+- Render each `merged_prs` entry once with its full URL and exact PR title as the short behavior summary.
+  Preserve its concrete nouns and meaning when punctuation needs adjustment.
+  Never substitute a task title, prompt, status event, or invented behavior for the PR title.
+  The title is the approved wording source for this view, so do not fetch PR bodies to expand it.
+- Keep recorded completions visible on every invocation, including repeats from a prior digest.
+  A `landed` PR marked `recorded_merged` or `unverified` needs a terse missing-evidence note, not a confirmed merge claim.
+  Place an `open` or `closed` contradiction with the PR status and name its actual state.
+  A ready PR still belongs in Captain's Call only under the existing actionability rules.
+- State the PR observation time, ledger age, and any partial, unavailable, cached, or capped evidence beside the PR portion.
+  A failed lookup never means that no PRs merged.
+  Retain the scope disclosure when recorded identities omit other project work.
+- End the PR portion with one terse sentence that connects these changes to the recorded project goal.
+  Use `project_progress` goals and dependency links to connect each merge to its purpose.
+  Name a remaining dependency when the evidence supports it.
+  If a goal or its links are missing, say that project progress is unverified instead of guessing.
+  A merge confirms code integration only.
+  Never claim deployment, a working status-page tile, or green production from merge or CI evidence.
+
+For Lavish, only confirmed merged PRs and non-PR completions belong in the payload's `landed` rows.
+Put unresolved PR evidence in a warning row, because landed board rows can suppress captain decision cards.
+Set the board payload's `pr_evidence_note` and `pr_progress` from the same PR disclosure and progress sentence.
+Keep exact private intent in its existing validation record.
+Never publish verbatim captain prompts as PR prose.
 
 ## Tone and content rules
 

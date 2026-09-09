@@ -114,4 +114,6 @@ const errorText = [...byId.entries()]
 const empty = ch.children.filter((c) => c.className.includes("bb-empty")).map((c) => c.textContent);
 const more = ch.children.filter((c) => c.className.includes("bb-morechip")).map((c) => c.textContent);
 
-process.stdout.write(JSON.stringify({ stats, charted, empty, more, error: errorText }) + "\n");
+const landed = (byId.get("bb-landed")?.children ?? []).map((node) => node.textContent);
+
+process.stdout.write(JSON.stringify({ stats, charted, empty, more, landed, error: errorText }) + "\n");

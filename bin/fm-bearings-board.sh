@@ -71,6 +71,9 @@
 # only as the deliberate genuinely-no-repo marker. In that exceptional case
 # the template may display the routing id. Anything else refuses before the
 # existing board is touched.
+# Optional pr_evidence_note and pr_progress strings render before and after the
+# Recently Landed rows. They carry PR freshness and the project-progress sentence.
+# These display-only fields do not participate in decision or landed identity.
 #
 # The board path is stable - $FM_HOME/.lavish/bearings-board.html - so a
 # re-invocation rebuilds the same file in place, which keeps the same Lavish
@@ -170,6 +173,7 @@ validate_payload() {  # <data.json>
     and (.home | nonempty_string)
     and (.generated | nonempty_string)
     and (.prs_live | type == "boolean")
+    and optional_string("pr_evidence_note") and optional_string("pr_progress")
     and (.captains_call | type == "array")
     and (.underway | type == "array")
     and (.landed | type == "array")

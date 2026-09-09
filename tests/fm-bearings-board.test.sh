@@ -215,6 +215,11 @@ test_build_refuses_malformed_payloads_before_touching_the_board() {
   [ "$rc" -ne 0 ] || fail "a 129-char captains_call key was accepted"
 
   write_valid_payload "$data"
+  jq '.pr_progress = {unexpected:"object"}' "$data" > "$data.tmp" && mv "$data.tmp" "$data"
+  set +e; out=$(run_board "$home" build "$data" 2>&1); rc=$?; set -e
+  [ "$rc" -ne 0 ] || fail "a non-string PR progress sentence was accepted"
+
+  write_valid_payload "$data"
   jq 'del(.charted[0].dispatchable)' "$data" > "$data.tmp" && mv "$data.tmp" "$data"
   set +e; out=$(run_board "$home" build "$data" 2>&1); rc=$?; set -e
   [ "$rc" -ne 0 ] || fail "a charted row without a dispatchable boolean was accepted"

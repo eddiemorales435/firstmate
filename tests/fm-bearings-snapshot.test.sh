@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Behavior tests for the bearings projection wrapper over fm-fleet-snapshot.sh.
-# Covers the output/token bound, TOON/JSON parity, the local-only default (zero
-# GitHub/network calls), the --include-prs opt-in path, graceful degradation on a
+# Covers the output/token bound, TOON/JSON parity, default managed PR truth,
+# the --include-prs review opt-in path, graceful degradation on a
 # partial PR-fetch failure, end-to-end unresolved-decision durability, and current
 # report pointers.
 set -u
@@ -50,23 +50,45 @@ SH
   cat > "$fb/gh" <<'SH'
 #!/usr/bin/env bash
 echo "gh $*" >> "$NET_LOG"
-if [ "${FAKE_GH_FAIL:-0}" = 1 ]; then exit 1; fi
-if [ "${FAKE_GH_SLEEP:-0}" = 1 ]; then sleep 30; fi
-if [ "${FAKE_GH_MANY:-0}" = 1 ]; then
-  cat <<'JSON'
-[{"number":1,"title":"One","url":"https://github.com/acme/repo/pull/1","headRefName":"fm/one","reviewDecision":"","mergeable":"MERGEABLE","statusCheckRollup":[]},{"number":2,"title":"Two","url":"https://github.com/acme/repo/pull/2","headRefName":"fm/two","reviewDecision":"","mergeable":"MERGEABLE","statusCheckRollup":[]},{"number":3,"title":"Three","url":"https://github.com/acme/repo/pull/3","headRefName":"fm/three","reviewDecision":"","mergeable":"MERGEABLE","statusCheckRollup":[]}]
-JSON
-  exit 0
-fi
-cat <<'JSON'
-[{"number":9,"title":"Ship the thing","url":"https://github.com/kunchenguid/firstmate/pull/9","headRefName":"fm/ship-task","reviewDecision":"APPROVED","mergeable":"MERGEABLE","statusCheckRollup":[{"conclusion":"SUCCESS","status":"COMPLETED"}]}]
-JSON
+exit 1
 SH
   cat > "$fb/gh-axi" <<'SH'
 #!/usr/bin/env bash
 echo "gh-axi $*" >> "$NET_LOG"
 [ "${FAKE_GH_FAIL:-0}" = 1 ] && exit 1
-exit 0
+[ "${FAKE_GH_SLEEP:-0}" = 1 ] && sleep 30
+[ "${FAKE_GH_MALFORMED:-0}" = 1 ] && { echo 'payload: broken'; exit 0; }
+input=''
+while [ "$#" -gt 0 ]; do
+  case "$1" in --input) shift; input=$1 ;; esac
+  shift
+done
+query=$(jq -r '.query' "$input")
+printf '%s\n' "$query" > "$NET_LOG.query"
+payload=$(jq -nr --arg query "$query" '
+  [ $query | scan("(p[0-9]+): repository\\(owner:\"([^\"]+)\",name:\"([^\"]+)\"\\) \\{ pullRequest\\(number:([0-9]+)\\)")
+    | {key:.[0],owner:.[1],repo:.[2],num:.[3]} ]
+  | map(. as $row | {key:.key,value:{pullRequest:{
+      url:("https://github.com/" + .owner + "/" + .repo + "/pull/" + .num),
+      title:(if .num == "7" then "Add status-page freshness: 95% & café" else "Ship " + .num end),
+      state:(if .num == "9" then "OPEN" else "MERGED" end),
+      mergedAt:(if .num == "9" then null else "2026-07-10T12:00:00Z" end),
+      updatedAt:"2026-07-11T12:00:00Z",isDraft:false,reviewDecision:"APPROVED",mergeable:"MERGEABLE",
+      commits:{nodes:[{commit:{statusCheckRollup:{state:"SUCCESS"}}}]}
+    }}})
+  | from_entries
+  | if env.FAKE_GH_CLOSED == "1" then
+      with_entries(if .value.pullRequest.url | endswith("/7") then
+        .value.pullRequest.state = "CLOSED" | .value.pullRequest.mergedAt = null else . end) else . end
+  | if env.FAKE_GH_ACTIVE_MERGED == "1" then
+      with_entries(.value.pullRequest.state = "MERGED" | .value.pullRequest.mergedAt = "2026-07-11T17:00:00Z") else . end
+  | if env.FAKE_GH_SPOOF == "1" then with_entries(.value.pullRequest.url = "https://github.com/unrelated/flood/pull/1") else . end
+  | if env.FAKE_GH_NO_MERGE_DATE == "1" then with_entries(.value.pullRequest.state = "MERGED" | .value.pullRequest.mergedAt = null) else . end
+  | if env.FAKE_GH_BADSTRUCT == "1" then "wrong shape" else . end
+  | if env.FAKE_GH_PARTIAL == "1" then .p0 = null else . end
+  | {data:.,errors:(if env.FAKE_GH_PARTIAL == "1" then [{path:["p0"],message:"inaccessible"}] else [] end)}
+  | tojson | @base64')
+printf 'payload: %s\n' "$payload"
 SH
   cat > "$fb/curl" <<'SH'
 #!/usr/bin/env bash
@@ -379,7 +401,7 @@ test_domain_alpha_stale_parent_event_does_not_become_current_work() {
       and .terminal_evidence.contradiction == true
       and .contradiction == true
   ' >/dev/null || fail "bounded terminal contradiction evidence was not labeled and subordinate: $canonical"
-  [ ! -s "$home/net.log" ] || fail "Domain Alpha structured-home read made a network call: $(cat "$home/net.log")"
+  [ ! -s "$home/net.log" ] || fail "a home without PR identities must make no GitHub call"
   pass "Domain Alpha structured state overrides a stale parent Phase 7 event"
 }
 
@@ -1030,7 +1052,7 @@ EOF
   pass "repeated snapshots keep the same current landed baseline and ignore prior reports"
 }
 
-test_default_is_bounded_and_local_only() {
+test_default_is_bounded_with_managed_pr_truth() {
   local home fakebin toon json backlog
   home=$(make_home bounded); write_fixture "$home"
   backlog="$home/data/backlog.md"
@@ -1044,17 +1066,15 @@ test_default_is_bounded_and_local_only() {
   # TOON is materially smaller than the canonical snapshot it projects.
   local canon; canon=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$ROOT/bin/fm-fleet-snapshot.sh" --json)
   [ "${#toon}" -lt "${#canon}" ] || fail "projection must be smaller than the canonical snapshot"
-  # Local-only: no GitHub/network call on the default path.
-  [ ! -s "$home/net.log" ] || fail "default run must make no gh/gh-axi call, got: $(cat "$home/net.log")"
-  # Definitive not-requested PR state, never a silent omission.
-  assert_contains "$toon" 'prs: "not_requested' "default must state PR checks were not requested"
-  assert_contains "$toon" "live PR discovery + checks,\"--include-prs\"" "omitted must mark the dropped live-PR surface"
+  [ "$(grep -c '^gh-axi api POST graphql ' "$home/net.log")" = 2 ] || fail "each default invocation must use one batched request"
+  assert_contains "$toon" 'prs: fresh' "default must state fresh PR truth"
+  assert_contains "$toon" "live PR review + checks,\"--include-prs\"" "omitted must mark review detail as opt-in"
   # Valid JSON, correct schema.
   printf '%s' "$json" | jq -e '
     .schema == "fm-bearings.v1"
       and (.in_flight | any(.id == "ship-task" and .repo == "firstmate"))
   ' >/dev/null || fail "json schema or main Underway repository wrong: $json"
-  pass "default output is bounded, local-only, and marks omitted surfaces"
+  pass "default output is bounded, includes managed PR truth, and marks omitted surfaces"
 }
 
 test_toon_json_parity() {
@@ -1389,20 +1409,19 @@ EOF
   pass "revealed deferred holds display their deferral reason while live calls stay unannotated"
 }
 
-test_include_prs_is_the_only_fetch_path() {
+test_include_prs_adds_review_detail() {
   local home fakebin json
   home=$(make_home prs); write_fixture "$home"
   fakebin=$(make_fakebin "$home"); : > "$home/net.log"
   json=$(run "$home" "$fakebin" --include-prs --json)
-  # Now gh WAS called, exactly for pr list.
-  grep -q '^gh pr list ' "$home/net.log" || fail "--include-prs must call gh pr list"
+  grep -q '^gh-axi api POST graphql ' "$home/net.log" || fail "--include-prs must use the batched query"
   printf '%s' "$json" | jq -e '
-    .prs | startswith("checked")
+    .prs | startswith("fresh")
   ' >/dev/null || fail "--include-prs must report checked PR state"
   printf '%s' "$json" | jq -e '
     .candidate_prs | any(.[]; .num == "9" and .task == "ship-task" and .checks == "passing" and .review == "APPROVED")
   ' >/dev/null || fail "candidate_prs must carry the fetched PR cross-referenced to its task: $json"
-  pass "--include-prs is the only path that fetches, and it enriches correctly"
+  pass "--include-prs enriches review and checks in the same request"
 }
 
 test_partial_github_failure_degrades() {
@@ -1426,7 +1445,7 @@ test_perl_fallback_bounds_github_call() {
   fakebin=$(make_fakebin "$home")
   toolbin="$home/toolbin"
   mkdir -p "$toolbin"
-  for cmd in bash dirname basename jq date sed git grep tail cut tr head sort wc perl sleep cat find mktemp rm mkdir chmod mv cp awk; do
+  for cmd in bash dirname basename jq date sed git grep tail cut tr head sort wc perl sleep cat find mktemp rm mkdir chmod mv cp awk env; do
     ln -s "$(command -v "$cmd")" "$toolbin/$cmd"
   done
   for cmd in shasum sha256sum; do
@@ -1438,7 +1457,7 @@ test_perl_fallback_bounds_github_call() {
     FM_BEARINGS_PR_TIMEOUT=1 NET_LOG="$home/net.log" FAKE_GH_SLEEP=1 "$BEARINGS" --include-prs --json)
   elapsed=$(( $(date +%s) - started ))
   [ "$elapsed" -lt 10 ] || fail "Perl fallback did not bound a stalled gh call (${elapsed}s)"
-  printf '%s' "$json" | jq -e '.prs | test("unavailable")' >/dev/null \
+  printf '%s' "$json" | jq -e '.prs | contains("timed out")' >/dev/null \
     || fail "timed-out gh call did not fail soft: $json"
   pass "Perl fallback bounds stalled GitHub calls without coreutils timeout"
 }
@@ -1500,14 +1519,14 @@ test_pr_repository_cap_and_expansion() {
   home=$(make_home repo-caps); write_large_fixture "$home" 5
   fakebin=$(make_fakebin "$home"); : > "$home/net.log"
   json=$(FM_BEARINGS_PR_REPOS=2 run "$home" "$fakebin" --include-prs --json)
-  [ "$(grep -c '^gh pr list ' "$home/net.log")" = 2 ] || fail "default PR repository cap was not enforced"
+  [ "$(grep -c '^gh-axi api POST graphql ' "$home/net.log")" = 1 ] || fail "default PR repository cap was not enforced"
   printf '%s' "$json" | jq -e '
     [.omitted[] | select(.surface == "PR repositories showing 2 of 5" and .reveal == "--all-pr-repos")] | length == 1
   ' >/dev/null || fail "PR repository truncation was not recorded: $json"
   : > "$home/net.log"
   expanded=$(FM_BEARINGS_PR_REPOS=2 run "$home" "$fakebin" --include-prs --all-pr-repos --json)
-  [ "$(grep -c '^gh pr list ' "$home/net.log")" = 5 ] || fail "--all-pr-repos did not reveal every repository"
-  printf '%s' "$expanded" | jq -e '.candidate_prs | length == 5' >/dev/null \
+  [ "$(grep -c '^gh-axi api POST graphql ' "$home/net.log")" = 1 ] || fail "--all-pr-repos did not reveal every repository"
+  printf '%s' "$expanded" | jq -e '.pr_evidence | length == 5' >/dev/null \
     || fail "expanded PR repository set did not enrich every repository: $expanded"
   pass "live PR enrichment caps repositories with counted expansion"
 }
@@ -1516,15 +1535,15 @@ test_per_repository_pr_cap_is_disclosed() {
   local home fakebin json toon
   home=$(make_home pr-row-cap); write_fixture "$home"
   fakebin=$(make_fakebin "$home")
-  json=$(FM_BEARINGS_PR_LIMIT=2 FAKE_GH_MANY=1 run "$home" "$fakebin" --include-prs --json)
-  toon=$(FM_BEARINGS_PR_LIMIT=2 FAKE_GH_MANY=1 run "$home" "$fakebin" --include-prs)
+  json=$(FM_BEARINGS_PR_LIMIT=2 run "$home" "$fakebin" --include-prs --json)
+  toon=$(FM_BEARINGS_PR_LIMIT=2 run "$home" "$fakebin" --include-prs)
   printf '%s' "$json" | jq -e '
-    (.candidate_prs | length) == 2
-    and (.prs | test("2 shown, at least 3 open; capped in 1 repo"))
-    and ([.omitted[] | select(.surface == "candidate_prs showing 2 of at least 3; capped in 1 repo(s)" and .reveal == "raise FM_BEARINGS_PR_LIMIT")] | length) == 1
+    (.pr_evidence | length) == 2
+    and (.prs | startswith("partial"))
+    and (.omitted | any(.surface == "managed PRs showing 2 of 3"))
   ' >/dev/null || fail "per-repository PR truncation was not disclosed: $json"
-  assert_contains "$toon" 'candidate_prs showing 2 of at least 3' "TOON did not preserve PR truncation disclosure"
-  pass "per-repository open-PR caps are disclosed with an expansion knob"
+  assert_contains "$toon" 'managed PRs showing 2 of 3' "TOON did not preserve PR truncation disclosure"
+  pass "per-repository managed PR identity caps are disclosed with an expansion knob"
 }
 
 install_failing_jq() {  # <fakebin> <model|toon>
@@ -1599,8 +1618,7 @@ test_landed_includes_secondmate_home_merges() {
     (.landed | any(.[]; .id == "mate-landed" and (.artifact | test("/pull/50"))))
       and (.landed | any(.[]; .id == "done-a"))
   ' >/dev/null || fail "landed must merge secondmate-home Done with main-home Done: $json"
-  # Still zero network on this default path.
-  [ ! -s "$home/net.log" ] || fail "landed roll-up must make no gh/gh-axi call, got: $(cat "$home/net.log")"
+  [ "$(grep -c '^gh-axi api POST graphql ' "$home/net.log")" = 1 ] || fail "secondmate merges must share the batch"
   pass "landed includes secondmate-managed merges alongside main-home merges"
 }
 
@@ -2921,6 +2939,127 @@ test_a_remote_home_without_any_ledger_is_explicitly_unreadable_without_remote_co
   pass "a missing remote ledger stays explicitly unreadable without remote summary computation"
 }
 
+test_pr_truth_remote_goal_and_aged_scope() {
+  local parent fakebin provider remote_home json
+  parent=$(make_home pr-aged-remote)
+  make_remote_ledger_fleet "$parent" 1
+  fakebin=$(make_remote_ledger_ssh "$parent/remote-ssh")
+  provider=$(make_fakebin "$parent")
+  remote_home="$TMP_ROOT/remote-ledger-home-1"
+  jq '.recorded_prs = [{id:"remote-ship",repo:"firstmate",url:"https://github.com/kunchenguid/firstmate/pull/77"}]
+    | .project_goals = [{id:"remote-goal",repo:"firstmate",goal:"A useful status page",
+        blocked_by_ids:["remote-ship"],unresolved_blocker_ids:["remote-ship"]}]'     "$remote_home/state/home-summary.json" > "$remote_home/state/next.json"
+  mv "$remote_home/state/next.json" "$remote_home/state/home-summary.json"
+  json=$(PATH="$provider:$PATH" NET_LOG="$parent/net.log" run_remote_ledger_bearings "$parent" "$fakebin" 2000)
+  printf '%s' "$json" | jq -e '
+    (.merged_prs | any(.id == "remote-ship" and .owner == "ledger-1"
+       and .freshness == "fresh" and .scope_freshness == "fresh" and .scope_age_seconds == 1000))
+    and (.project_progress | any(.id == "remote-goal" and .freshness == "fresh" and .age_seconds == 1000
+       and .merged_prs == 1 and .pending == "remote-ship" and .deployment == "unknown"))
+  ' >/dev/null || fail "fresh PR truth hid aged remote scope or lost its goal: $json"
+  mv "$remote_home/state/home-summary.json" "$remote_home/state/last-good.json"
+  json=$(PATH="$provider:$PATH" NET_LOG="$parent/net.log" run_remote_ledger_bearings "$parent" "$fakebin" 2001)
+  printf '%s' "$json" | jq -e '
+    (.merged_prs | any(.freshness == "fresh" and .scope_freshness == "cached" and .scope_age_seconds == 1001))
+    and (.project_progress | any(.freshness == "cached" and .age_seconds == 1001))
+  ' >/dev/null || fail "cached source age disappeared behind a fresh PR lookup: $json"
+  jq '.recorded_prs = "malformed" | .project_goals = [{id:9}]' \
+    "$remote_home/state/last-good.json" > "$remote_home/state/next.json"
+  mv "$remote_home/state/next.json" "$remote_home/state/home-summary.json"
+  json=$(PATH="$provider:$PATH" NET_LOG="$parent/net.log" run_remote_ledger_bearings "$parent" "$fakebin" 2000)
+  printf '%s' "$json" | jq -e '
+    (.merged_prs | length) == 0 and (.project_progress | length) == 0
+    and (.omitted | any(.surface == "secondmate ledger-1 lacks current PR or goal fields"))
+    and (.decisions_open | length) > 0
+  ' >/dev/null || fail "malformed additive fields erased independent structured state: $json"
+  pass "remote PRs and goals preserve stale scope and reject malformed optional fields independently"
+}
+
+test_default_pr_truth_states_scope_and_fidelity() {
+  local home fakebin json
+  home=$(make_home pr-truth); write_fixture "$home"
+  fakebin=$(make_fakebin "$home")
+  # A program is the structured goal; a private task prompt is not PR prose.
+  cat >> "$home/data/backlog.md" <<'EOF'
+## In flight
+- [ ] status-page - Accurate status page (repo: firstmate) (kind: program) blocked-by: done-a blocked-by: ship-task
+## Queued
+- [ ] unrelated - Unmanaged queued idea https://github.com/unrelated/flood/pull/100 (repo: unrelated) (kind: ship)
+EOF
+  json=$(run "$home" "$fakebin" --json)
+  printf '%s' "$json" | jq -e '
+    (.merged_prs | length) == 2
+    and (.merged_prs | any(.id == "done-a" and .title == "Add status-page freshness: 95% & café"))
+    and (.pr_evidence | any(.id == "ship-task" and .state == "open" and .checks == "not_collected"))
+    and (.project_progress | any(.goal == "Accurate status page" and .merged_prs == 1 and .pending == "ship-task"))
+    and ([.pr_evidence[].deployment] | all(. == "unknown"))
+  ' >/dev/null || fail "default PR state/title/goal truth is wrong: $json"
+  [ "$(wc -l < "$home/net.log" | tr -d ' ')" = 1 ] || fail "PR truth used multiple calls"
+  if grep -Eq 'unrelated|pr list|statusCheckRollup|body' "$home/net.log" "$home/net.log.query"; then
+    fail "default PR query reached outside its identity or field scope"
+  fi
+  json=$(FAKE_GH_CLOSED=1 run "$home" "$fakebin" --include-prs --json)
+  printf '%s' "$json" | jq -e '
+    (.merged_prs | any(.id == "done-a" or .id == "ship-task") | not)
+    and (.landed | any(.id == "done-a" and .state == "closed"))
+    and (.candidate_prs | any(.task == "ship-task" and .checks == "passing"))
+    and .project_progress[0].merged_prs == 0
+  ' >/dev/null || fail "closed or passing PR was promoted to merged: $json"
+  json=$(FM_TIMEOUT_MECHANISM_OVERRIDE=bash FAKE_GH_ACTIVE_MERGED=1 run "$home" "$fakebin" --json)
+  printf '%s' "$json" | jq -e '.merged_prs | any(.id == "ship-task")' >/dev/null     || fail "a merged current PR waited for local teardown to appear"
+  pass "default PR truth preserves exact titles, scopes identities, links goals, and separates closed/green/merged/deployed"
+}
+
+test_pr_truth_partial_unavailable_and_offline() {
+  local home fakebin json mode
+  home=$(make_home pr-errors); write_fixture "$home"
+  fakebin=$(make_fakebin "$home")
+  json=$(FAKE_GH_PARTIAL=1 run "$home" "$fakebin" --json)
+  printf '%s' "$json" | jq -e '
+    (.prs | startswith("partial")) and (.pr_evidence | any(.freshness == "unavailable"))
+    and (.pr_evidence | any(.freshness == "fresh")) and (.merged_prs | length) > 0
+  ' >/dev/null || fail "partial PR evidence erased available facts: $json"
+  for mode in FAIL MALFORMED SPOOF NO_MERGE_DATE BADSTRUCT; do
+    json=$(export "FAKE_GH_$mode=1"; run "$home" "$fakebin" --json)
+    printf '%s' "$json" | jq -e '
+      (.prs | startswith("unavailable")) and (.merged_prs | length) == 0
+      and (.landed | any(.state == "recorded_merged" and .what == "Recorded PR; title unavailable"))
+      and (.in_flight | length) > 0
+    ' >/dev/null || fail "$mode erased uncertainty or accepted unrelated PR evidence: $json"
+  done
+  : > "$home/net.log"
+  json=$(run "$home" "$fakebin" --local-only --json)
+  [ ! -s "$home/net.log" ] || fail "local-only called GitHub"
+  printf '%s' "$json" | jq -e '
+    (.prs | startswith("not_collected")) and ([.pr_evidence[].freshness] | all(. == "not_collected"))
+  ' >/dev/null || fail "offline data lacks a freshness disclosure"
+  pass "partial, malformed, unavailable, spoofed, and offline PR results retain honest evidence limits"
+}
+
+test_pr_truth_shared_deadline_and_latency() {
+  local home fakebin json started elapsed
+  home=$(make_home pr-latency); write_large_fixture "$home" 5
+  fakebin=$(make_fakebin "$home"); : > "$home/net.log"
+  started=$(perl -MTime::HiRes=time -e 'printf "%.0f\n", time()*1000')
+  json=$(run "$home" "$fakebin" --json)
+  elapsed=$(( $(perl -MTime::HiRes=time -e 'printf "%.0f\n", time()*1000') - started ))
+  printf 'PR_TRUTH_TIMING fast_ms=%s repos=5 requests=%s\n' "$elapsed" "$(wc -l < "$home/net.log" | tr -d ' ')"
+  [ "$elapsed" -lt 10000 ] || fail "fast fixture exceeded ten seconds: $elapsed"
+  : > "$home/net.log"
+  started=$(perl -MTime::HiRes=time -e 'printf "%.0f\n", time()*1000')
+  json=$(FAKE_GH_SLEEP=1 FM_BEARINGS_PR_TIMEOUT=1 run "$home" "$fakebin" --json)
+  elapsed=$(( $(perl -MTime::HiRes=time -e 'printf "%.0f\n", time()*1000') - started ))
+  printf 'PR_TRUTH_TIMING timeout_ms=%s repos=5 requests=%s budget_ms=1000\n' "$elapsed" "$(wc -l < "$home/net.log" | tr -d ' ')"
+  [ "$elapsed" -lt 5000 ] || fail "unavailable provider multiplied the shared deadline: $elapsed"
+  [ "$(wc -l < "$home/net.log" | tr -d ' ')" = 1 ] || fail "deadline path used more than one request"
+  printf '%s' "$json" | jq -e '.prs | contains("timed out")' >/dev/null || fail "timeout is not visible"
+  pass "fast and unavailable providers use one request and a shared deadline across five repositories"
+}
+
+test_pr_truth_remote_goal_and_aged_scope
+test_default_pr_truth_states_scope_and_fidelity
+test_pr_truth_partial_unavailable_and_offline
+test_pr_truth_shared_deadline_and_latency
 test_task_teardown_during_metadata_capture_does_not_abort_snapshot
 test_current_state_uses_captured_status_observation
 test_relaunched_task_does_not_inherit_reused_endpoint_state
@@ -2940,7 +3079,7 @@ test_parent_evidence_reconciles_by_verb_and_key
 test_nonprogressing_child_states_are_explicit
 test_registry_unavailability_and_bounds_are_explicit
 test_current_landed_baseline_is_repeatable_and_prior_report_independent
-test_default_is_bounded_and_local_only
+test_default_is_bounded_with_managed_pr_truth
 test_toon_json_parity
 test_landed_includes_secondmate_home_merges
 test_landed_default_balances_dominant_and_sparse_homes
@@ -2963,7 +3102,7 @@ test_completed_scout_report_not_pending
 test_open_decision_surfaces_end_to_end
 test_report_pointers_surface
 test_queued_item_prose_never_hides_it
-test_include_prs_is_the_only_fetch_path
+test_include_prs_adds_review_detail
 test_partial_github_failure_degrades
 test_perl_fallback_bounds_github_call
 test_section_caps_and_expansion_flags
