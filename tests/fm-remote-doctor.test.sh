@@ -42,6 +42,7 @@ new_case() {
   unset CASE_REMOTE_JOB_ACTIVE
   unset CASE_PLATFORM_OVERRIDE
   unset CASE_DSCL_FAIL
+  unset CASE_SECOND_LOGIN_SHELL
   unset CASE_ENV_SHELL
   CASE_N=$((CASE_N + 1))
   CASE_LOGIN_SHELL=${4:-/bin/sh}
@@ -170,7 +171,15 @@ SH
 set -u
 [ "${FM_FAKE_DSCL_FAIL:-0}" != 1 ] || exit 1
 if [ "${1:-}" = . ] && [ "${2:-}" = -read ] && [ "${4:-}" = UserShell ]; then
-  printf 'UserShell: %s\n' "${FM_FAKE_LOGIN_SHELL:-/bin/sh}"
+  count_file="$FM_FAKE_STATE/dscl-count"
+  count=$(cat "$count_file" 2>/dev/null || printf 0)
+  count=$((count + 1))
+  printf '%s\n' "$count" > "$count_file"
+  shell=${FM_FAKE_LOGIN_SHELL:-/bin/sh}
+  if [ "$count" -gt 1 ] && [ -n "${FM_FAKE_SECOND_LOGIN_SHELL:-}" ]; then
+    shell=$FM_FAKE_SECOND_LOGIN_SHELL
+  fi
+  printf 'UserShell: %s\n' "$shell"
   exit 0
 fi
 exit 1
@@ -246,6 +255,7 @@ doctor() {
     FM_FAKE_JOB_WORKER="$ROOT/bin/fm-remote-job-worker.sh" \
     FM_FAKE_LAUNCH_AGENT_LOG="$CASE_HOME/Library/Logs/$LABEL.log" \
     FM_FAKE_LOGIN_SHELL="${CASE_LOGIN_SHELL:-/bin/sh}" \
+    FM_FAKE_SECOND_LOGIN_SHELL="${CASE_SECOND_LOGIN_SHELL:-}" \
     FM_FAKE_DSCL_FAIL="${CASE_DSCL_FAIL:-0}" \
     SHELL="${CASE_ENV_SHELL-${SHELL-}}" \
     FM_REMOTE_JOB_PLATFORM_OVERRIDE="${CASE_PLATFORM_OVERRIDE-}" \
@@ -575,6 +585,24 @@ doctor --fix
 expect_code 0 "$DOCTOR_RC" "--fix rejected the POSIX shell fallback"
 assert_herdr_launch_agent_contract "$CASE_PLIST" "$CASE_BIN/herdr" /bin/sh
 pass "shell resolution uses executable SHELL and POSIX fallbacks"
+
+# --- one shell resolution is shared by render, validation, and reporting ----
+
+new_case Darwin with-herdr gui /bin/sh
+doctor --fix
+expect_code 0 "$DOCTOR_RC" "initial repair did not install a healthy login-shell agent"
+assert_herdr_launch_agent_contract "$CASE_PLIST" "$CASE_BIN/herdr" /bin/sh
+: > "$CASE_LAUNCHCTL_LOG"
+rm -f "$CASE_STATE/dscl-count"
+CASE_SECOND_LOGIN_SHELL=/bin/bash
+doctor --fix
+expect_code 0 "$DOCTOR_RC" "repeated repair drifted when a second shell lookup would differ"
+assert_contains "$DOCTOR_OUT" 'check launchagent=ok:' "the installed login-shell plist was reported as drifted"
+assert_contains "$DOCTOR_OUT" 'check launchagent-loaded=ok:' "the loaded login-shell agent was reported as drifted"
+[ "$(cat "$CASE_STATE/dscl-count")" = 1 ] || fail "doctor resolved the account login shell more than once"
+assert_no_grep '^bootout\|^bootstrap\|^kickstart' "$CASE_LAUNCHCTL_LOG" \
+  "repeated repair reloaded an already healthy login-shell agent"
+pass "repeated repair reuses one resolved login shell and remains a no-op"
 
 # --- linux has no launch agent, and --fix starts the server directly ---------
 
