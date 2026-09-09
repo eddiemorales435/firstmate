@@ -41,7 +41,6 @@ Board answers are acted on later under the normal authority rules; this skill's 
    The command's header and `--help` output own its exact fields, bounds, opt-ins, and output contract.
    The default performs bounded concurrent remote-ledger reads for registered remote homes under one shared snapshot budget and may refresh the parent-side cache.
    Only pass `--include-prs` when the captain asks for review and CI detail beyond the default PR truth.
-   If the captain requests an offline digest, pass `--local-only` and state that live PR truth is unavailable.
    For registered secondmates, use the snapshot's structured-home classification and provenance.
    A parent event or bounded terminal contradiction is fallback evidence, never authority over readable structured home state.
    A decision is simply a task held for the captain (`captain-hold-lifecycle`), whatever its kind.

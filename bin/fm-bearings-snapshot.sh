@@ -20,7 +20,7 @@
 # FM_BEARINGS_PR_REPOS (10) caps repositories and FM_BEARINGS_PR_LIMIT (20) caps
 # identities per repository. Recent baseline identities take priority over current
 # work within each repository. No pagination, per-PR calls, retries, or PR cache.
-# --local-only skips GitHub; --include-prs adds review/check fields to the same batch.
+# --include-prs adds review/check fields to the same batch.
 # bin/fm-bearings-prs.jq implements this projection over canonical JSON.
 #
 # Additive fm-bearings.v1 fields:
@@ -83,7 +83,6 @@
 #   (default)        compact projection with bounded remote-ledger collection, TOON
 #   --json           the same projected model as JSON (machine/debug; parity form)
 #   --include-prs    add live review and checks to the managed-PR batch
-#   --local-only     skip GitHub with an explicit not_collected disclosure
 #   --fields <list>  opt in to dropped surfaces: bodies,paths,actions,endpoints
 #   --all-in-flight  include every in-flight task
 #   --all-decisions  include every open decision and captain hold in the bounded snapshot
@@ -140,7 +139,7 @@ validate_bound FM_BEARINGS_PR_LIMIT "$FM_BEARINGS_PR_LIMIT"
 
 usage() {
   cat <<'EOF'
-usage: fm-bearings-snapshot.sh [--json] [--include-prs] [--local-only] [--fields <list>]
+usage: fm-bearings-snapshot.sh [--json] [--include-prs] [--fields <list>]
                                [--all-in-flight] [--all-decisions]
                                [--all-secondmates] [--all-landed]
                                [--all-reports] [--all-queued]
@@ -152,7 +151,7 @@ Default collection performs bounded concurrent remote-ledger reads for registere
 remote homes under one shared snapshot budget and may refresh the parent-side cache.
 Default PR truth uses one gh-axi GraphQL batch of recorded managed PR identities.
 The shared GitHub deadline is FM_BEARINGS_PR_TIMEOUT (3 seconds by default).
---include-prs adds review/check detail; --local-only skips GitHub with disclosure.
+--include-prs adds review/check detail to the same bounded request.
 No repository-wide discovery, PR bodies, pagination, or sequential PR lookups.
 
 Default fields: schema, home, generated, prs, in_flight{id,kind,state,repo,doing},
@@ -183,7 +182,6 @@ EOF
 
 FORMAT=toon
 INCLUDE_PRS=0
-LOCAL_ONLY=0
 ALL_REPORTS=0
 ALL_QUEUED=0
 ALL_IN_FLIGHT=0
@@ -198,7 +196,6 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --json) FORMAT=json ;;
     --include-prs) INCLUDE_PRS=1 ;;
-    --local-only) LOCAL_ONLY=1 ;;
     --all-reports) ALL_REPORTS=1 ;;
     --all-queued) ALL_QUEUED=1 ;;
     --all-in-flight) ALL_IN_FLIGHT=1 ;;
@@ -527,7 +524,7 @@ pr_project() {
   local mode=$1
   shift
   jq --arg mode "$mode" --slurpfile model <(printf '%s' "$MODEL") \
-    --argjson include_prs "$INCLUDE_PRS" --argjson local_only "$LOCAL_ONLY" \
+    --argjson include_prs "$INCLUDE_PRS" \
     --argjson all_repos "$ALL_PR_REPOS" --argjson repo_limit "$FM_BEARINGS_PR_REPOS" \
     --argjson pr_limit "$FM_BEARINGS_PR_LIMIT" --argjson goal_limit "$FM_BEARINGS_GATES" --arg now "$NOW" \
     --slurpfile scope <(printf '%s' "$PR_SCOPE") --slurpfile response <(printf '%s' "$PR_RESPONSE") \
@@ -548,9 +545,7 @@ PR_SCOPE='{}'
 PR_RESPONSE='{}'
 PR_SCOPE=$(printf '%s' "$SNAP" | pr_project scope) || exit 1
 PR_FAILURE='PR missing, malformed, or inaccessible'
-if [ "$LOCAL_ONLY" = 1 ]; then
-  PR_FAILURE='live PR collection disabled'
-elif [ "$(printf '%s' "$PR_SCOPE" | jq '.rows | length')" -gt 0 ]; then
+if [ "$(printf '%s' "$PR_SCOPE" | jq '.rows | length')" -gt 0 ]; then
   if ! command -v gh-axi >/dev/null 2>&1; then
     PR_FAILURE='gh-axi not found'
   else

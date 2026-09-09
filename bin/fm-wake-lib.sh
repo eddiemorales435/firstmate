@@ -883,7 +883,7 @@ fm_recovery_marker_reopen_announced() {
 }
 
 # Return 0 for ownership, 1 for contention, or 2 for an owner creation error.
-# Only contention is eligible for a wait.
+# Checked wait callers distinguish contention from an owner creation error.
 fm_lock_try_acquire() {
   local lockdir=$1 pid steal cur rc steal_owner primary_owner current
   FM_LOCK_HELD_PID=
@@ -994,15 +994,19 @@ fm_lock_try_acquire() {
   return "$rc"
 }
 
-fm_lock_acquire_wait() {
-  local lockdir=$1 rc
+# Without --fail-on-error this returns only after ownership, as unchecked callers expect.
+# Checked callers can request immediate creation-error propagation instead of waiting for recovery.
+fm_lock_acquire_wait() {  # <lockdir> [--fail-on-error]
+  local lockdir=$1 error_mode=${2:-} rc
   while :; do
     if fm_lock_try_acquire "$lockdir"; then
       return 0
     else
       rc=$?
     fi
-    [ "$rc" -eq 1 ] || return "$rc"
+    if [ "$error_mode" = --fail-on-error ] && [ "$rc" -ne 1 ]; then
+      return "$rc"
+    fi
     sleep 0.1
   done
 }
@@ -1016,7 +1020,7 @@ _fm_lock_acquire_wait_handoff() {  # <lockdir> <caller-pid>
   case "$caller_pid" in ''|*[!0-9]*) return 1 ;; esac
   fm_pid_alive "$caller_pid" || return 1
   trap 'fm_lock_release "$lockdir"; exit 143' TERM INT
-  fm_lock_acquire_wait "$lockdir" || return 1
+  fm_lock_acquire_wait "$lockdir" --fail-on-error || return 1
   if [ -L "$lockdir" ]; then
     ownerdir=$(fm_lock_link_owner "$lockdir" 2>/dev/null) || {
       fm_lock_release "$lockdir"

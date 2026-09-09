@@ -1567,12 +1567,55 @@ test_lock_creation_failure_returns_without_recursion() {
     # shellcheck disable=SC2016 # The child Bash expands these arguments.
     FM_STATE_OVERRIDE="$state" fm_run_timed 5 env FUNCNEST=48 bash -c '
       . "$1"
-      fm_lock_acquire_wait "$2"
+      fm_lock_acquire_wait "$2" --fail-on-error
     ' _ "$ROOT/bin/fm-wake-lib.sh" "$lock" > "$dir/result" 2>&1 || rc=$?
     [ "$rc" -eq 2 ] || fail "uncreatable lock did not return a bounded creation error (rc=$rc)"
   done
   [ "$(cat "$dir/file-parent")" = fixture ] || fail "lock failure changed its parent file"
   pass "lock creation errors return without recursion or waiting for contention"
+}
+
+test_default_lock_wait_does_not_return_on_creation_error() {
+  local dir state real_mktemp pid i rc=0
+  dir=$(make_case default-lock-create-error)
+  state="$dir/state"
+  real_mktemp=$(command -v mktemp)
+  : > "$dir/deny"
+  cat > "$dir/fakebin/mktemp" <<'DENY'
+#!/usr/bin/env bash
+case "$*" in *.owner.XXXXXX*) [ ! -e "$FM_TEST_LOCK_DENY" ] || exit 1 ;; esac
+exec "$FM_TEST_REAL_MKTEMP" "$@"
+DENY
+  chmod +x "$dir/fakebin/mktemp"
+  FM_STATE_OVERRIDE="$state" PATH="$dir/fakebin:$PATH" FM_TEST_LOCK_DENY="$dir/deny" \
+    FM_TEST_REAL_MKTEMP="$real_mktemp" bash -c '
+      . "$1"
+      fm_lock_acquire_wait "$2"
+      printf "owned\n" > "$3"
+      fm_lock_release "$2"
+    ' _ "$ROOT/bin/fm-wake-lib.sh" "$state/fixture.lock" "$dir/progress" &
+  pid=$!
+  sleep 0.4
+  if ! kill -0 "$pid" 2>/dev/null || [ -e "$dir/progress" ]; then
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    fail "default lock wait returned before it owned the lock"
+  fi
+  rm -f "$dir/deny"
+  i=0
+  while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 100 ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    fail "default lock wait did not acquire after creation recovered"
+  fi
+  wait "$pid" || rc=$?
+  [ "$rc" -eq 0 ] && [ "$(cat "$dir/progress")" = owned ] \
+    || fail "default lock wait failed after creation recovered (rc=$rc)"
+  pass "default lock wait never returns without ownership after a creation error"
 }
 
 # A trap that fires inside a lock's critical section abandons the holding
@@ -1928,6 +1971,7 @@ test_historical_annotation_skips_announced_status() {
 }
 
 test_lock_creation_failure_returns_without_recursion
+test_default_lock_wait_does_not_return_on_creation_error
 test_self_held_lock_reclaims_instead_of_deadlocking
 test_subshell_lock_ownership_without_bashpid
 test_bounded_lock_handoff_after_contention

@@ -1783,8 +1783,8 @@ EOF
     '.landed | any(.id == "shipping-scout" and .artifact == $report)' >/dev/null \
     || failures="${failures}longer-word explicit scout kind was lost; "
   [ -z "$failures" ] || fail "$failures$json"
-  [ ! -s "$home/net.log" ] \
-    || fail "kind-owned landed selection made a network call: $(cat "$home/net.log")"
+  [ "$(wc -l < "$home/net.log" | tr -d ' ')" -eq 1 ] \
+    || fail "kind-owned landed selection did not use one bounded PR batch"
   pass "landed accepts only kind-owned delivery artifacts while answered questions stay out"
 }
 
@@ -3295,7 +3295,7 @@ EOF
   pass "default PR truth preserves exact titles, scopes identities, links goals, and separates closed/green/merged/deployed"
 }
 
-test_pr_truth_partial_unavailable_and_offline() {
+test_pr_truth_partial_unavailable() {
   local home fakebin json mode
   home=$(make_home pr-errors); write_fixture "$home"
   fakebin=$(make_fakebin "$home")
@@ -3312,13 +3312,7 @@ test_pr_truth_partial_unavailable_and_offline() {
       and (.in_flight | length) > 0
     ' >/dev/null || fail "$mode erased uncertainty or accepted unrelated PR evidence: $json"
   done
-  : > "$home/net.log"
-  json=$(run "$home" "$fakebin" --local-only --json)
-  [ ! -s "$home/net.log" ] || fail "local-only called GitHub"
-  printf '%s' "$json" | jq -e '
-    (.prs | startswith("not_collected")) and ([.pr_evidence[].freshness] | all(. == "not_collected"))
-  ' >/dev/null || fail "offline data lacks a freshness disclosure"
-  pass "partial, malformed, unavailable, spoofed, and offline PR results retain honest evidence limits"
+  pass "partial, malformed, unavailable, and spoofed PR results retain honest evidence limits"
 }
 
 test_pr_truth_shared_deadline_and_latency() {
@@ -3344,7 +3338,7 @@ test_pr_truth_shared_deadline_and_latency() {
 test_pr_truth_remote_goal_and_aged_scope
 test_invalid_recorded_pr_urls_never_poison_valid_evidence
 test_default_pr_truth_states_scope_and_fidelity
-test_pr_truth_partial_unavailable_and_offline
+test_pr_truth_partial_unavailable
 test_pr_truth_shared_deadline_and_latency
 test_task_teardown_during_metadata_capture_does_not_abort_snapshot
 test_current_state_uses_captured_status_observation

@@ -54,7 +54,7 @@ elif $mode == "result" then
          state:(if $valid then ($pr.state | ascii_downcase) else "unknown" end),
          merged_at:(if $valid then $pr.mergedAt else null end),
          observed_at:(if $valid then $now else null end),
-         freshness:(if $valid then "fresh" elif $local_only == 1 then "not_collected" else "unavailable" end),
+         freshness:(if $valid then "fresh" else "unavailable" end),
          scope_freshness:$row.scope_freshness,
          scope_age_seconds:$row.scope_age_seconds,
          reason:(if $valid then null else $failure end),
@@ -76,8 +76,7 @@ elif $mode == "result" then
   | ([$evidence[] | select(.freshness == "fresh")] | length) as $fresh
   | ($scope.total - ($scope.rows | length)) as $omitted
   | $model
-  | .prs = (if $local_only == 1 then "not_collected (local-only)"
-            elif $scope.total == 0 then "no recorded managed PRs"
+  | .prs = (if $scope.total == 0 then "no recorded managed PRs"
             elif $fresh == 0 then "unavailable (" + $failure + ")"
             elif $fresh < $scope.total then "partial" else "fresh" end
             + "; \($fresh)/\($scope.total) recorded managed PRs observed; \($merged | length) confirmed merged")
