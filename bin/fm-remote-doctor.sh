@@ -183,9 +183,14 @@ launch_agent_xml_escape() { # <value>
 # /bin/sh. Separate -l and -c so fish accepts the flags.
 resolve_launch_agent_shell() {
   local user raw shell
+  if [ -n "${FM_LAUNCH_AGENT_SHELL:-}" ] && [ -x "$FM_LAUNCH_AGENT_SHELL" ]; then
+    printf '%s' "$FM_LAUNCH_AGENT_SHELL"
+    return 0
+  fi
   user=$(id -un 2>/dev/null || true)
-  if [ -n "$user" ] && command -v dscl >/dev/null 2>&1; then
-    raw=$(dscl . -read "/Users/$user" UserShell 2>/dev/null || true)
+  if [ -n "$user" ] && command -v dscl >/dev/null 2>&1 && command -v perl >/dev/null 2>&1; then
+    raw=$(perl -e '$SIG{ALRM} = sub { exit 124 }; alarm 2; exec @ARGV' \
+      dscl . -read "/Users/$user" UserShell 2>/dev/null || true)
     shell=$(printf '%s\n' "$raw" | awk '
       /^UserShell:[[:space:]]+/ {
         sub(/^UserShell:[[:space:]]+/, "")

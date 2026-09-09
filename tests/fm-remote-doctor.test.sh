@@ -42,8 +42,10 @@ new_case() {
   unset CASE_REMOTE_JOB_ACTIVE
   unset CASE_PLATFORM_OVERRIDE
   unset CASE_DSCL_FAIL
+  unset CASE_DSCL_HANG
   unset CASE_SECOND_LOGIN_SHELL
   unset CASE_ENV_SHELL
+  unset CASE_RESOLVE_DSCL
   CASE_N=$((CASE_N + 1))
   CASE_LOGIN_SHELL=${4:-/bin/sh}
   CASE_DIR="$TMP_ROOT/case$CASE_N"
@@ -170,6 +172,7 @@ SH
 #!/usr/bin/env bash
 set -u
 [ "${FM_FAKE_DSCL_FAIL:-0}" != 1 ] || exit 1
+[ "${FM_FAKE_DSCL_HANG:-0}" != 1 ] || exec /bin/sleep 30
 if [ "${1:-}" = . ] && [ "${2:-}" = -read ] && [ "${4:-}" = UserShell ]; then
   count_file="$FM_FAKE_STATE/dscl-count"
   count=$(cat "$count_file" 2>/dev/null || printf 0)
@@ -257,6 +260,8 @@ doctor() {
     FM_FAKE_LOGIN_SHELL="${CASE_LOGIN_SHELL:-/bin/sh}" \
     FM_FAKE_SECOND_LOGIN_SHELL="${CASE_SECOND_LOGIN_SHELL:-}" \
     FM_FAKE_DSCL_FAIL="${CASE_DSCL_FAIL:-0}" \
+    FM_FAKE_DSCL_HANG="${CASE_DSCL_HANG:-0}" \
+    FM_LAUNCH_AGENT_SHELL="$([ "${CASE_RESOLVE_DSCL:-0}" = 1 ] || printf '%s' "$CASE_LOGIN_SHELL")" \
     SHELL="${CASE_ENV_SHELL-${SHELL-}}" \
     FM_REMOTE_JOB_PLATFORM_OVERRIDE="${CASE_PLATFORM_OVERRIDE-}" \
     FM_REMOTE_JOB_ACTIVE="${CASE_REMOTE_JOB_ACTIVE-1}" \
@@ -286,6 +291,14 @@ EOF
 # Parse the doctor's owned launch-agent plist and assert the login-shell
 # argv contract. The plist is Firstmate's output, so semantic structure is
 # in bounds; never match the XML source as a substring.
+plist_value() { # <plist> <key>
+  python3 -c 'import plistlib,sys; value=plistlib.load(open(sys.argv[1], "rb"))[sys.argv[2]]; print(value)' "$1" "$2"
+}
+
+plist_first_value() { # <plist> <array-key>
+  python3 -c 'import plistlib,sys; print(plistlib.load(open(sys.argv[1], "rb"))[sys.argv[2]][0])' "$1" "$2"
+}
+
 assert_herdr_launch_agent_contract() { # <plist> <herdr-bin> [login-shell]
   local plist=$1 herdr_bin=$2 expected_shell=${3:-$CASE_LOGIN_SHELL} json argv0 argv1 argv2 cmd
   json=$(python3 -c 'import json,plistlib,sys; print(json.dumps(plistlib.load(open(sys.argv[1], "rb"))))' "$plist") \
@@ -382,10 +395,13 @@ assert_contains "$DOCTOR_OUT" 'check remote-job-worker-loaded=ok:' "--fix did no
 assert_present "$CASE_PLIST" "--fix reported success without writing the plist"
 assert_present "$CASE_JOB_PLIST" "--fix reported success without writing the remote job worker plist"
 assert_herdr_launch_agent_contract "$CASE_PLIST" "$CASE_BIN/herdr"
-assert_no_grep '<string>default</string>' "$CASE_PLIST" "the written plist pins the interactive default session"
-assert_grep "<string>$JOB_LABEL</string>" "$CASE_JOB_PLIST" "the worker plist does not carry the Firstmate label"
-assert_grep '<string>Aqua</string>' "$CASE_JOB_PLIST" "the worker plist is not Aqua-scoped"
-assert_grep "$ROOT/bin/fm-remote-job-worker.sh" "$CASE_JOB_PLIST" "the worker plist does not use the configured code root"
+[ "$(plist_value "$CASE_JOB_PLIST" Label)" = "$JOB_LABEL" ] \
+  || fail "the worker plist does not carry the Firstmate label"
+[ "$(plist_value "$CASE_JOB_PLIST" LimitLoadToSessionType)" = Aqua ] \
+  || fail "the worker plist is not Aqua-scoped"
+[ "$(plist_first_value "$CASE_JOB_PLIST" ProgramArguments)" = "$ROOT/bin/fm-remote-job-worker.sh" ] \
+  || fail "the worker plist does not use the configured code root"
+assert_absent "$CASE_STATE/dscl-count" "the injected login shell still consulted Directory Services"
 assert_grep "gui/$(id -u)" "$CASE_LAUNCHCTL_LOG" "the launch agent was not bootstrapped into the GUI domain"
 cmp -s "$CASE_STATE/interactive-before.plist" "$CASE_INTERACTIVE_PLIST" \
   || fail "the fm-remote repair rewrote the interactive default launch agent"
@@ -440,7 +456,6 @@ doctor --fix
 expect_code 0 "$DOCTOR_RC" "--fix did not repair launch-agent contract drift"
 assert_contains "$DOCTOR_OUT" 'check launchagent=ok:' "the repaired launch-agent contract was not confirmed"
 assert_herdr_launch_agent_contract "$CASE_PLIST" "$CASE_BIN/herdr"
-assert_no_grep '/obsolete/bin/herdr' "$CASE_PLIST" "the obsolete herdr path survived repair"
 pass "a loaded and running launch agent must match the complete owned contract"
 
 # --- failed replacement cannot hide a stale loaded launch-agent contract -----
@@ -506,7 +521,6 @@ expect_code 0 "$DOCTOR_RC" "--fix could not re-scope an existing launch agent"
 assert_contains "$DOCTOR_OUT" 'check launchagent-scope=ok: LimitLoadToSessionType=Aqua' \
   "--fix did not re-scope the launch agent to Aqua"
 assert_herdr_launch_agent_contract "$CASE_PLIST" "$CASE_BIN/herdr"
-assert_no_grep 'Background' "$CASE_PLIST" "the Background session scope survived the repair"
 pass "a launch agent outside the Aqua session scope is rewritten in place"
 
 # --- launchd start failures are reported and delayed readiness is awaited ----
@@ -554,6 +568,7 @@ pass "human gaps are reported with their operator step and never claimed as fixe
 # --- a non-zsh login shell is rendered with separate -l and -c --------------
 
 new_case Darwin with-herdr gui /bin/bash
+CASE_RESOLVE_DSCL=1
 doctor --fix
 expect_code 0 "$DOCTOR_RC" "--fix left a bash-login-shell host unready"
 assert_herdr_launch_agent_contract "$CASE_PLIST" "$CASE_BIN/herdr" /bin/bash
@@ -564,6 +579,7 @@ CASE_LOGIN_SHELL="$CASE_DIR/My Shell/fish&dev"
 mkdir -p "$(dirname "$CASE_LOGIN_SHELL")"
 printf '#!/bin/sh\nexit 0\n' > "$CASE_LOGIN_SHELL"
 chmod +x "$CASE_LOGIN_SHELL"
+CASE_RESOLVE_DSCL=1
 doctor --fix
 expect_code 0 "$DOCTOR_RC" "--fix rejected a valid custom Directory Services shell"
 assert_herdr_launch_agent_contract "$CASE_PLIST" "$CASE_BIN/herdr" "$CASE_LOGIN_SHELL"
@@ -572,6 +588,7 @@ pass "custom Directory Services shell paths remain valid plist arguments"
 # --- shell resolution falls back to an executable environment shell, then sh -
 
 new_case Darwin with-herdr gui /bin/bash
+CASE_RESOLVE_DSCL=1
 CASE_DSCL_FAIL=1
 CASE_ENV_SHELL=/bin/bash
 doctor --fix
@@ -579,16 +596,29 @@ expect_code 0 "$DOCTOR_RC" "--fix rejected an executable SHELL fallback"
 assert_herdr_launch_agent_contract "$CASE_PLIST" "$CASE_BIN/herdr" /bin/bash
 
 new_case Darwin with-herdr gui /bin/sh
+CASE_RESOLVE_DSCL=1
 CASE_DSCL_FAIL=1
 CASE_ENV_SHELL="$CASE_DIR/not-a-shell"
 doctor --fix
 expect_code 0 "$DOCTOR_RC" "--fix rejected the POSIX shell fallback"
 assert_herdr_launch_agent_contract "$CASE_PLIST" "$CASE_BIN/herdr" /bin/sh
-pass "shell resolution uses executable SHELL and POSIX fallbacks"
+
+new_case Darwin with-herdr gui /bin/sh
+CASE_RESOLVE_DSCL=1
+CASE_DSCL_HANG=1
+CASE_ENV_SHELL=/bin/sh
+SECONDS=0
+doctor --fix
+elapsed=$SECONDS
+expect_code 0 "$DOCTOR_RC" "--fix did not fall back after a stalled Directory Services lookup"
+[ "$elapsed" -lt 10 ] || fail "a stalled Directory Services lookup blocked doctor for ${elapsed}s"
+assert_herdr_launch_agent_contract "$CASE_PLIST" "$CASE_BIN/herdr" /bin/sh
+pass "shell resolution bounds Directory Services and uses executable SHELL and POSIX fallbacks"
 
 # --- one shell resolution is shared by render, validation, and reporting ----
 
 new_case Darwin with-herdr gui /bin/sh
+CASE_RESOLVE_DSCL=1
 doctor --fix
 expect_code 0 "$DOCTOR_RC" "initial repair did not install a healthy login-shell agent"
 assert_herdr_launch_agent_contract "$CASE_PLIST" "$CASE_BIN/herdr" /bin/sh
